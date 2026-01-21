@@ -57,6 +57,15 @@ import iped.parsers.whatsapp.WhatsAppParser;
 import iped.properties.BasicProps;
 import iped.properties.ExtraProperties;
 import iped.properties.MediaTypes;
+import java.io.InputStream;
+
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
+
 import iped.utils.IOUtil;
 
 public class GraphTask extends AbstractTask {
@@ -85,6 +94,11 @@ public class GraphTask extends AbstractTask {
             SkypeParser.CONTACT_MIME_TYPE, WhatsAppParser.WHATSAPP_CONTACT.toString(),
             TelegramParser.TELEGRAM_CONTACT.toString(), "application/windows-adress-book",
             "application/x-ufed-contact" };
+
+    private static final String NFE_XML = "application/x-nfe+xml";
+    private static final String CTE_XML = "application/x-cte+xml";
+    private static final String NFE_PDF = "application/x-nfe+pdf";
+    private static final String CTE_PDF = "application/x-cte+pdf";
 
     private static final int MAX_PHONE_CACHE_KEY = 50 * 1024;
 
@@ -122,6 +136,15 @@ public class GraphTask extends AbstractTask {
             if (graphFileWriter == null) {
                 graphFileWriter = new GraphFileWriter(new File(output, CSVS_PATH),
                         configuration.getDefaultEntity());
+                Map<String, String> types = new HashMap<>();
+                types.put("value", "double");
+                types.put("icms", "double");
+                graphFileWriter.configureRelationshipFields("TRANSACTION", types);
+                types = new HashMap<>();
+                types.put("totalValue", "double");
+                types.put("totalIcms", "double");
+                types.put("count", "int");
+                graphFileWriter.configureRelationshipFields("FISCAL_TRANSACTION", types);
 
                 if (configuration.getProcessProximityRelationships() && caseData.isIpedReport()) {
                     logger.warn(
@@ -222,6 +245,20 @@ public class GraphTask extends AbstractTask {
             if (configuration.getProcessProximityRelationships() && !caseData.isIpedReport()) {
                 processExtraAttributes(evidence);
             }
+        }
+
+        String mime = evidence.getMediaType().toString();
+
+        // Debug logging to verify detection
+        // if (evidence.getName().toLowerCase().endsWith(".xml") ||
+        // evidence.getName().toLowerCase().endsWith(".pdf")) {
+        // logger.info("Checking graph candidate: " + evidence.getName() + " [" + mime +
+        // "]");
+        // }
+
+        if (mime.startsWith(NFE_XML) || mime.startsWith(CTE_XML) || mime.startsWith(NFE_PDF)
+                || mime.startsWith(CTE_PDF) || mime.equals("application/pdf")) {
+            processNFeCTe(evidence);
         }
 
     }
@@ -354,7 +391,8 @@ public class GraphTask extends AbstractTask {
     }
 
     private NodeValues getGroupNodeValues(String value) {
-        return new NodeValues(DynLabel.label(GraphConfiguration.CONTACT_GROUP_LABEL), BasicProps.NAME, value.trim().toLowerCase());
+        return new NodeValues(DynLabel.label(GraphConfiguration.CONTACT_GROUP_LABEL), BasicProps.NAME,
+                value.trim().toLowerCase());
     }
 
     private NodeValues getGenericNodeValues(String value) {
@@ -723,6 +761,218 @@ public class GraphTask extends AbstractTask {
                 nv2.propertyValue, relationshipType, relProps);
     }
 
+    private void processNFeCTe(IItem evidence) {
+        String mime = evidence.getMediaType().toString();
+        boolean isPdf = mime.endsWith("pdf");
+
+        String remetCNPJ = null;
+        String remetName = null;
+        String destCNPJ = null;
+        String destName = null;
+        double vProd = 0.0;
+        double vICMS = 0.0;
+        // Metadata fields for graph
+        String remetCity = "", remetState = "", destCity = "", destState = "";
+
+        try {
+            if (isPdf) {
+                // Metadata extraction (populated by PDFTextParser)
+                Metadata m = evidence.getMetadata();
+                String docType = m.get(ExtraProperties.FISCAL_DOCTYPE);
+
+                if (m.get(ExtraProperties.FISCAL_DOCTYPE) != null) {
+                    remetCNPJ = m.get(ExtraProperties.FISCAL_REMET_CNPJ);
+                    remetName = m.get(ExtraProperties.FISCAL_REMET_NAME);
+                    remetCity = m.get(ExtraProperties.FISCAL_REMET_CITY);
+                    remetState = m.get(ExtraProperties.FISCAL_REMET_UF);
+
+                    destCNPJ = m.get(ExtraProperties.FISCAL_DEST_CNPJ);
+                    destName = m.get(ExtraProperties.FISCAL_DEST_NAME);
+                    destCity = m.get(ExtraProperties.FISCAL_DEST_CITY);
+                    // Use dest state if available, if (remetCity == null) remetCity = "";
+                    if (remetState == null)
+                        remetState = "";
+
+                    // Parser has remetUF. Dest city is extracted.
+
+                    String vVal = m.get(ExtraProperties.FISCAL_VALUE);
+                    if (vVal != null)
+                        vProd = parseDoubleSafe(vVal);
+
+                    String vIcms = m.get(ExtraProperties.FISCAL_ICMS);
+                    if (vIcms != null)
+                        vICMS = parseDoubleSafe(vIcms);
+                }
+
+            } else {
+                // Parse XML
+                try (InputStream is = evidence.getSeekableInputStream()) {
+                    DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
+                    DocumentBuilder dBuilder = dbFactory.newDocumentBuilder();
+                    Document doc = dBuilder.parse(is);
+                    doc.getDocumentElement().normalize();
+
+                    // Remetente (Sender)
+                    Element emit = (Element) doc.getElementsByTagName("emit").item(0);
+                    if (emit != null) {
+                        remetCNPJ = getTagValue(emit, "CNPJ");
+                        remetName = getTagValue(emit, "xNome");
+                        Element enderEmit = (Element) emit.getElementsByTagName("enderEmit").item(0);
+                        if (enderEmit != null) {
+                            remetCity = getTagValue(enderEmit, "xMun");
+                            remetState = getTagValue(enderEmit, "UF");
+                        }
+                    }
+
+                    // Recipient
+                    Element dest = (Element) doc.getElementsByTagName("dest").item(0);
+                    if (dest != null) {
+                        destCNPJ = getTagValue(dest, "CNPJ");
+                        destName = getTagValue(dest, "xNome");
+                        Element enderDest = (Element) dest.getElementsByTagName("enderDest").item(0);
+                        if (enderDest != null) {
+                            destCity = getTagValue(enderDest, "xMun");
+                            destState = getTagValue(enderDest, "UF");
+                        }
+                    }
+
+                    // Check Operation Type (tpNF)
+                    // 0 = Entry (Entrada) -> Emitente is actually the one SENDING goods to us?
+                    // Wait, if I emit an Entry Note (tpNF=0), I am RECEIVING goods.
+                    // So "Emitente" (me) is the Destination. "Destinatario" (supplier) is the
+                    // Sender.
+                    // User Request: "se tpNF=0, deve-se inverter isso, sendo o 'emit' o
+                    // destinatário e o 'dest' o remetente"
+                    // Current default maps Emit tag -> remet variables.
+                    // So if tpNF=0, we swap.
+                    Element ide = (Element) doc.getElementsByTagName("ide").item(0);
+                    if (ide != null) {
+                        String tpNF = getTagValue(ide, "tpNF");
+                        if ("0".equals(tpNF)) {
+                            // Swap
+                            String tmpCNPJ = remetCNPJ;
+                            String tmpName = remetName;
+                            String tmpCity = remetCity;
+                            String tmpState = remetState;
+
+                            remetCNPJ = destCNPJ;
+                            remetName = destName;
+                            remetCity = destCity;
+                            remetState = destState;
+
+                            destCNPJ = tmpCNPJ;
+                            destName = tmpName;
+                            destCity = tmpCity;
+                            destState = tmpState;
+                        }
+                    }
+
+                    // Values
+                    Element total = (Element) doc.getElementsByTagName("total").item(0);
+                    if (total != null) {
+                        Element icmsTot = (Element) total.getElementsByTagName("ICMSTot").item(0);
+                        if (icmsTot != null) {
+                            vProd = parseDoubleSafe(getTagValue(icmsTot, "vProd"));
+                            vICMS = parseDoubleSafe(getTagValue(icmsTot, "vICMS"));
+                        }
+                    } else {
+                        Element vPrest = (Element) doc.getElementsByTagName("vPrest").item(0);
+                        if (vPrest != null) {
+                            vProd = parseDoubleSafe(getTagValue(vPrest, "vTPrest"));
+                        }
+                        NodeList vIcmsList = doc.getElementsByTagName("vICMS");
+                        if (vIcmsList != null && vIcmsList.getLength() > 0) {
+                            vICMS = parseDoubleSafe(vIcmsList.item(0).getTextContent());
+                        }
+                    }
+                } catch (Exception e) {
+                    logger.error("Error parsing XML: " + evidence.getName(), e);
+                }
+            }
+
+            // Create Nodes and Rel
+            if (remetCNPJ != null && destCNPJ != null) {
+                // Ensure remetented CNPJ is valid if it came from XML too? XML usually trusted,
+                // but check doesn't hurt.
+                // Actually XML ones are usually just digits. We can leave as is.
+
+                Map<String, Object> remetProps = new HashMap<>();
+                remetProps.put("name", remetName);
+                if (remetCity != null && !remetCity.isEmpty())
+                    remetProps.put("city", remetCity);
+                if (remetState != null && !remetState.isEmpty())
+                    remetProps.put("state", remetState);
+                String remetId = writeCompanyNode(remetCNPJ, remetName, remetProps);
+
+                Map<String, Object> destProps = new HashMap<>();
+                destProps.put("name", destName);
+                if (destCity != null && !destCity.isEmpty())
+                    destProps.put("city", destCity);
+                if (destState != null && !destState.isEmpty())
+                    destProps.put("state", destState);
+                String destId = writeCompanyNode(destCNPJ, destName, destProps);
+
+                // LOG SUCCESS
+                // logger.info("GraphTask: Created transaction " + emitCNPJ + " -> " + destCNPJ
+                // + " Value: " + vProd);
+
+                // Transaction
+                Map<String, Object> props = new HashMap<>();
+                props.put("value", vProd);
+                props.put("icms", vICMS);
+
+                String docType = "Other";
+                String mt = evidence.getMediaType().toString().toLowerCase();
+                if (mt.contains("nfe"))
+                    docType = "NFe";
+                else if (mt.contains("cte"))
+                    docType = "CTe";
+                props.put("doc_type", docType);
+
+                props.put(RELATIONSHIP_ID, evidence.getId());
+                props.put(RELATIONSHIP_SOURCE, evidence.getDataSource().getUUID());//
+
+                // Use FISCAL_TRANSACTION as requested
+                graphFileWriter.writeRelationship(remetId, DynLabel.label(GraphConfiguration.ORGANIZATION_LABEL),
+                        "cnpj", destCNPJ,
+                        DynRelationshipType.withName("FISCAL_TRANSACTION"), props);
+            } else {
+                // logger.info("GraphTask: Skipping NFe/CTe " + evidence.getName() + " - Missing
+                // CNPJs. Remet: " + remetCNPJ
+                // + ", Dest: " + destCNPJ);
+            }
+        } catch (Exception e) {
+            logger.error("Error processing NFe/CTe graph for item " + evidence.getName(), e);
+        }
+    }
+
+    private String getTagValue(Element element, String tagName) {
+        if (element == null)
+            return null;
+        NodeList nodeList = element.getElementsByTagName(tagName);
+        if (nodeList != null && nodeList.getLength() > 0) {
+            return nodeList.item(0).getTextContent();
+        }
+        return null;
+    }
+
+    private String writeCompanyNode(String cnpj, String name) throws IOException {
+        return writeCompanyNode(cnpj, name, Collections.emptyMap());
+    }
+
+    private String writeCompanyNode(String cnpj, String name, Map<String, Object> extraProps) throws IOException {
+        // Merge props
+        Map<String, Object> props = new HashMap<>();
+        props.put("cnpj", cnpj);
+        if (name != null && !name.isEmpty()) {
+            props.put(BasicProps.NAME, name);
+        }
+        props.putAll(extraProps);
+
+        // Write node using (label, uniquePropName, uniquePropValue, allProps)
+        return graphFileWriter.writeNode(DynLabel.label(GraphConfiguration.ORGANIZATION_LABEL), "cnpj", cnpj, props);
+    }
+
     private void processWifi(IItem item) throws IOException {
 
         String relationType = getRelationType(item.getMediaType().toString());
@@ -859,4 +1109,14 @@ public class GraphTask extends AbstractTask {
         }
     }
 
+    private double parseDoubleSafe(String val) {
+        if (val == null)
+            return 0.0;
+        try {
+            val = val.replace(".", "").replace(",", ".");
+            return Double.parseDouble(val);
+        } catch (Exception e) {
+            return 0.0;
+        }
+    }
 }
