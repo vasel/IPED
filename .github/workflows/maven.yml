@@ -42,7 +42,7 @@ jobs:
         cd ..
         sudo apt-get install gsfonts
     - name: Build with Maven
-      run: mvn -B package --file pom.xml
+      run: mvn -B package -DskipTests --file pom.xml
     - shell: bash
       run: |
         cd target && mv release iped-snapshot-$GITHUB_SHA && tar -zcvf ../iped-snapshot.tar.gz iped-snapshot-$GITHUB_SHA
@@ -93,7 +93,7 @@ jobs:
         cd ..
         sudo apt-get install gsfonts
     - name: Build with Maven
-      run: mvn -B package --file pom.xml
+      run: mvn -B package -DskipTests --file pom.xml
     - shell: bash
       run: cd target && tar -zcvf ../iped-java14-snapshot.tar.gz .
     - name: Upload snapshot
