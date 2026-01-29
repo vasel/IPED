@@ -16,6 +16,7 @@ import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
+import javax.ws.rs.QueryParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
@@ -43,29 +44,35 @@ public class Sources {
     public static Map<Integer, String> sourceIntToString;
     public static Map<String, Integer> sourceStringToInt;
     public static Map<String, String> sourcePathToStringID;
+    private static String lastUrlToAskSources = null;
 
-    public static void init(String urlToAskSources) throws IOException, ParseException {
+    public synchronized static void init(String urlToAskSources) throws IOException, ParseException {
+        if (urlToAskSources != null)
+            lastUrlToAskSources = urlToAskSources;
+
         sourceIntToString = new HashMap<Integer, String>();
         sourceStringToInt = new HashMap<String, Integer>();
         sourcePathToStringID = new HashMap<String, String>();
 
         boolean confInited = false;
         List<IIPEDSource> sources = new ArrayList<IIPEDSource>();
-        JSONArray arr = askSources(urlToAskSources);
-        for (Object object : arr) {
-            JSONObject jsonobj = (JSONObject) object;
-            String id = (String) jsonobj.get("id");
-            File file = new File((String) jsonobj.get("path"));
+        if (lastUrlToAskSources != null) {
+            JSONArray arr = askSources(lastUrlToAskSources);
+            for (Object object : arr) {
+                JSONObject jsonobj = (JSONObject) object;
+                String id = (String) jsonobj.get("id");
+                File file = new File((String) jsonobj.get("path"));
 
-            sourcePathToStringID.put(file.toString(), id);
+                sourcePathToStringID.put(file.toString(), id);
 
-            if (!confInited) {
-                Configuration.getInstance().loadConfigurables(file + File.separator + "iped", true); //$NON-NLS-1$
-                confInited = true;
+                if (!confInited) {
+                    Configuration.getInstance().loadConfigurables(file + File.separator + "iped", true); //$NON-NLS-1$
+                    confInited = true;
+                }
+
+                IIPEDSource source = new IPEDSource(file);
+                sources.add(source);
             }
-
-            IIPEDSource source = new IPEDSource(file);
-            sources.add(source);
         }
 
         multiSource = new IPEDMultiSource(sources);
@@ -139,6 +146,15 @@ public class Sources {
         result.setId(sourceID);
         result.setPath(source.getCaseDir().toString());
         return result;
+    }
+
+    @ApiOperation(value = "Reload sources")
+    @POST
+    @Path("reload")
+    @Produces(MediaType.APPLICATION_JSON)
+    public static Response reload(@QueryParam("url") String url) throws IOException, ParseException {
+        init(url);
+        return Response.ok().build();
     }
 
     private static JSONArray askSources(String urlToAskSources)
