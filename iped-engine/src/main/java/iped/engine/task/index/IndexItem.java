@@ -18,8 +18,10 @@
  */
 package iped.engine.task.index;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.lang.reflect.Constructor;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -121,6 +123,8 @@ public class IndexItem extends BasicProps {
     private static final String NEW_DATASOURCE_PATH_FILE = "data/newDataSourceLocations.txt";
 
     private static final int MAX_DOCVALUE_SIZE = 4096;
+
+    private static volatile boolean useConsoleForMissingDataSources = false;
 
     public static final char EVENT_IDX_SEPARATOR = ';';
     public static final char EVENT_IDX_SEPARATOR2 = ',';
@@ -1042,12 +1046,39 @@ public class IndexItem extends BasicProps {
                 sisf.setDataSourceURI(newPath.toUri());
                 return;
             }
+            if (useConsoleForMissingDataSources) {
+                Path newConsolePath = askDataSourcePathInConsole(path);
+                sisf.setDataSourceURI(newConsolePath.toUri());
+                saveDataSourcePath(caseModuleDir, path, newConsolePath);
+                return;
+            }
             SelectImagePathWithDialog siwd = new SelectImagePathWithDialog(path.toFile(), true);
             File newDataSource = siwd.askImagePathInGUI();
             if (newDataSource != null) {
                 sisf.setDataSourceURI(newDataSource.toPath().toUri());
                 saveDataSourcePath(caseModuleDir, path, newDataSource.toPath());
             }
+        }
+    }
+
+    private static Path askDataSourcePathInConsole(Path missingPath) throws IOException {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+        while (true) {
+            System.out.println("Missing data source: " + missingPath.toString());
+            System.out.print("Enter new path: ");
+            String line = reader.readLine();
+            if (line == null) {
+                throw new IOException("Data source path not provided");
+            }
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) {
+                throw new IOException("Data source path not provided");
+            }
+            Path candidate = Paths.get(trimmed);
+            if (Files.exists(candidate)) {
+                return candidate;
+            }
+            System.out.println("Path not found: " + trimmed);
         }
     }
 
@@ -1106,6 +1137,10 @@ public class IndexItem extends BasicProps {
         } else {
             return f.stringValue();
         }
+    }
+
+    public static void setUseConsoleForMissingDataSources(boolean enabled) {
+        useConsoleForMissingDataSources = enabled;
     }
 
 }

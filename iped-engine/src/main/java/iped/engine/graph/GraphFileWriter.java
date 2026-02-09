@@ -47,10 +47,15 @@ import org.apache.commons.codec.digest.DigestUtils;
 import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.RelationshipType;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import iped.engine.util.Util;
 import iped.utils.StringUtil;
 
 public class GraphFileWriter implements Closeable, Flushable {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(GraphFileWriter.class);
 
     public static final String NODE_CSV_PREFIX = "nodes";
     public static final String REPLACE_NAME = "replace.csv";
@@ -412,19 +417,24 @@ public class GraphFileWriter implements Closeable, Flushable {
 
     // TODO improve to merge duplicate nodes instead of just skip
     public static void prepareMultiCaseCSVs(File output, List<File> csvParents) throws Exception {
+        LOGGER.info("Preparing multi-case CSVs at {} from {} source(s)", output, csvParents.size());
         AtomicInteger subDir = new AtomicInteger(-1);
         Set<String> ids = Collections.synchronizedSet(new HashSet<>());
         ExecutorService executor = Executors.newCachedThreadPool();
         ArrayList<Future<?>> futures = new ArrayList<>();
         for (File parent : csvParents) {
+            LOGGER.info("Queueing CSV merge for {}", parent);
             Runnable r = new Runnable() {
                 public void run() {
                     int num = subDir.incrementAndGet();
                     try {
                         File[] subFiles = parent.listFiles();
-                        if (subFiles == null)
+                        if (subFiles == null) {
+                            LOGGER.warn("No CSV files found under {}", parent);
                             return;
+                        }
                         for (File input : subFiles) {
+                            LOGGER.debug("Processing CSV {} from parent {}", input, parent);
                             File dest = new File(output, num + File.separator + input.getName().replace(".gzip", ""));
                             dest.getParentFile().mkdirs();
                             if (input.getName().startsWith(NODE_CSV_PREFIX) && !input.getName().contains(HEADER_CSV_STR)
@@ -440,6 +450,8 @@ public class GraphFileWriter implements Closeable, Flushable {
                                         if (ids.add(id)) {
                                             writer.write(line);
                                             writer.write("\r\n");
+                                        } else {
+                                            LOGGER.trace("Skipping duplicate node id {} from {}", id, input);
                                         }
                                     }
                                 }
@@ -449,22 +461,30 @@ public class GraphFileWriter implements Closeable, Flushable {
                                 }
                         }
                         File importArgs = new File(output, num + "/" + ARG_FILE_NAME);
+                        LOGGER.debug("Rewriting import args {}", importArgs);
                         String args = new String(Files.readAllBytes(importArgs.toPath()), StandardCharsets.UTF_8);
                         args = args.replace("=", "=" + num + "/").replace(",", "," + num + "/");
                         Files.write(importArgs.toPath(), args.getBytes(StandardCharsets.UTF_8),
                                 StandardOpenOption.TRUNCATE_EXISTING);
 
                     } catch (IOException e) {
-                        throw new RuntimeException(e);
+                        LOGGER.error("Error merging CSVs from {}", parent, e);
+                        throw new RuntimeException("Error merging CSVs from " + parent + ": " + e.getMessage(), e);
                     }
                 }
             };
             futures.add(executor.submit(r));
         }
         for (Future<?> f : futures) {
-            f.get();
+            try {
+                f.get();
+            } catch (Exception e) {
+                LOGGER.error("CSV preparation task failed", e);
+                throw e;
+            }
         }
         executor.shutdown();
+        LOGGER.info("Finished preparing multi-case CSVs at {}", output);
     }
 
     public void writeCreateRelationship(Label label1, String idProperty1, Object propertyValue1, Label label2,

@@ -48,6 +48,12 @@ public interface GraphService {
 
     void findLabels(LabelQueryListener listener);
 
+    void findRelationshipTypes(RelationshipTypeQueryListener listener);
+
+    void searchByLabel(String label, NodeQueryListener listener, int maxResults);
+
+    void searchByRelationshipType(String relationshipType, EdgeQueryListener listener, int maxResults);
+
     void findLinks(ExportLinksQuery query, LinkQueryListener listener);
 
     void advancedSearch(String string, FreeQueryListener listener);

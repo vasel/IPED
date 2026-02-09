@@ -14,13 +14,23 @@ import io.swagger.annotations.ApiModelProperty;
 public class SourceToIDsJSON {
 
     private Map<String, List<Integer>> sourceToids;
+    private int total;
+    private int start;
+    private int rows;
 
     public SourceToIDsJSON() {
         this.sourceToids = new HashMap<String, List<Integer>>();
     }
 
     public SourceToIDsJSON(List<DocIDJSON> docs) {
+        this(docs, docs.size(), 0, docs.size());
+    }
+
+    public SourceToIDsJSON(List<DocIDJSON> docs, int total, int start, int rows) {
         this();
+        this.total = total;
+        this.start = start;
+        this.rows = rows;
         for (DocIDJSON doc : docs) {
             String source = doc.getSource();
             Integer id = doc.getId();
@@ -32,7 +42,34 @@ public class SourceToIDsJSON {
         }
     }
 
-    @ApiModelProperty
+    @ApiModelProperty(value = "Total number of results")
+    public int getTotal() {
+        return total;
+    }
+
+    public void setTotal(int total) {
+        this.total = total;
+    }
+
+    @ApiModelProperty(value = "Starting offset")
+    public int getStart() {
+        return start;
+    }
+
+    public void setStart(int start) {
+        this.start = start;
+    }
+
+    @ApiModelProperty(value = "Number of rows requested")
+    public int getRows() {
+        return rows;
+    }
+
+    public void setRows(int rows) {
+        this.rows = rows;
+    }
+
+    @ApiModelProperty(value = "List of document IDs grouped by source")
     public List<DocIDGroupJSON> getData() {
         List<DocIDGroupJSON> result = new ArrayList<DocIDGroupJSON>();
         for (Map.Entry<String, List<Integer>> entry : this.sourceToids.entrySet()) {

@@ -63,7 +63,7 @@ public class NfeViewer extends HtmlViewer {
         }
     }
 
-    private void createNfeHtml(IStreamSource source, File htmlFile) throws IOException {
+    public void createNfeHtml(IStreamSource source, File htmlFile) throws IOException {
         StringBuilder sb = new StringBuilder();
         sb.append("<html><head>");
         sb.append("<meta http-equiv=\"content-type\" content=\"text/html; charset=UTF-8\" />");

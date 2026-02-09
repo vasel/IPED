@@ -33,6 +33,7 @@ import iped.data.IIPEDSource;
 import iped.engine.config.Configuration;
 import iped.engine.data.IPEDMultiSource;
 import iped.engine.data.IPEDSource;
+import iped.engine.task.index.IndexItem;
 import iped.engine.webapi.json.DataListJSON;
 import iped.engine.webapi.json.SourceJSON;
 
@@ -43,11 +44,16 @@ public class Sources {
     public static Map<Integer, String> sourceIntToString;
     public static Map<String, Integer> sourceStringToInt;
     public static Map<String, String> sourcePathToStringID;
+    private static String sourcesUrl = null;
 
     public static void init(String urlToAskSources) throws IOException, ParseException {
+        sourcesUrl = urlToAskSources;
         sourceIntToString = new HashMap<Integer, String>();
         sourceStringToInt = new HashMap<String, Integer>();
         sourcePathToStringID = new HashMap<String, String>();
+
+        IPEDSource.setUseConsoleForMissingImages(true);
+        IndexItem.setUseConsoleForMissingDataSources(true);
 
         boolean confInited = false;
         List<IIPEDSource> sources = new ArrayList<IIPEDSource>();
@@ -64,7 +70,8 @@ public class Sources {
                 confInited = true;
             }
 
-            IIPEDSource source = new IPEDSource(file);
+            IPEDSource source = new IPEDSource(file);
+            source.precheckDataSources();
             sources.add(source);
         }
 
@@ -83,7 +90,13 @@ public class Sources {
     }
 
     public static IIPEDSource getSource(String sourceID) {
-        int id = sourceStringToInt.get(sourceID);
+        if (sourceStringToInt == null || multiSource == null) {
+            throw new RuntimeException("Sources not initialized. Call init() first.");
+        }
+        Integer id = sourceStringToInt.get(sourceID);
+        if (id == null) {
+            throw new RuntimeException("Source not found: " + sourceID);
+        }
         return multiSource.getAtomicSourceBySourceId(id);
     }
 
@@ -91,11 +104,16 @@ public class Sources {
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public static DataListJSON<SourceJSON> listSources() throws TskCoreException, IOException {
+        if (multiSource == null || sourceIntToString == null) {
+            return new DataListJSON<SourceJSON>(new ArrayList<SourceJSON>());
+        }
         List<SourceJSON> data = new ArrayList<SourceJSON>();
         for (IIPEDSource source : multiSource.getAtomicSources()) {
             int id = source.getSourceId();
             String sourceID = sourceIntToString.get(id);
-            data.add(getone(sourceID));
+            if (sourceID != null) {
+                data.add(getone(sourceID));
+            }
         }
         return new DataListJSON<SourceJSON>(data);
     }
@@ -113,7 +131,9 @@ public class Sources {
 
         List<IPEDSource> sources = multiSource.getAtomicSources();
         int last = sources.size();
-        sources.add(new IPEDSource(new File(path)));
+        IPEDSource newSource = new IPEDSource(new File(path));
+        newSource.precheckDataSources();
+        sources.add(newSource);
         if (last + 1 != sources.size()) {
             throw new RuntimeException("concurrency error adding source");
         }
@@ -156,5 +176,51 @@ public class Sources {
             in.close();
         }
         return result;
+    }
+
+    @ApiOperation(value = "Reload sources")
+    @POST
+    @Path("reload")
+    @Produces(MediaType.APPLICATION_JSON)
+    public static synchronized Response reloadPost() throws IOException, ParseException {
+        return doReload();
+    }
+
+    @ApiOperation(value = "Reload sources")
+    @GET
+    @Path("reload")
+    @Produces(MediaType.APPLICATION_JSON)
+    public static synchronized Response reloadGet() throws IOException, ParseException {
+        return doReload();
+    }
+
+    private static Response doReload() throws IOException, ParseException {
+        if (sourcesUrl == null) {
+            return Response.status(Response.Status.BAD_REQUEST)
+                    .entity("Sources URL not initialized. Start the server with --sources parameter first.")
+                    .build();
+        }
+
+        // Close existing multiSource (it will close all internal sources)
+        if (multiSource != null) {
+            try {
+                multiSource.close();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+            multiSource = null;
+        }
+
+        // Clear maps before reinitializing
+        if (sourceIntToString != null)
+            sourceIntToString.clear();
+        if (sourceStringToInt != null)
+            sourceStringToInt.clear();
+        if (sourcePathToStringID != null)
+            sourcePathToStringID.clear();
+
+        // Reinitialize with the original sources URL
+        init(sourcesUrl);
+        return Response.ok().build();
     }
 }
