@@ -11,7 +11,10 @@ import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
 import org.glassfish.jersey.server.ResourceConfig;
 import org.json.simple.parser.ParseException;
 
-import io.swagger.jaxrs.config.BeanConfig;
+import io.swagger.v3.jaxrs2.integration.resources.OpenApiResource;
+import io.swagger.v3.oas.integration.SwaggerConfiguration;
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.info.Info;
 import iped.engine.Version;
 
 /**
@@ -30,25 +33,37 @@ public class Main {
      * @throws IOException
      * @throws ParseException
      */
-    public static HttpServer startServer(String host, int port, String urlToAskSources, boolean enableGraph)
-            throws Exception {
+    public static HttpServer startServer(String host, int port, String urlToAskSources, boolean enableGraph,
+            boolean checkSources) throws Exception {
+        System.out.println("Configuring JAX-RS resources...");
         // create a resource config that scans for JAX-RS resources and providers
         // in gpinf.api package
         String resources = Main.class.getPackageName();
-        BeanConfig beanConfig = new BeanConfig();
-        beanConfig.setVersion(Version.APP_VERSION);
-        beanConfig.setSchemes(new String[] { "http" });
-        beanConfig.setBasePath("/");
-        beanConfig.setResourcePackage(resources);
-        beanConfig.setScan(true);
+
+        OpenAPI openAPI = new OpenAPI()
+                .info(new Info()
+                        .title("IPED WebAPI")
+                        .version(Version.APP_VERSION)
+                        .description("IPED - Digital Evidence Indexer and Processor REST API"));
+        SwaggerConfiguration oasConfig = new SwaggerConfiguration()
+                .openAPI(openAPI)
+                .resourcePackages(java.util.Collections.singleton(resources))
+                .prettyPrint(true);
+
         final ResourceConfig rc = new ResourceConfig().packages(resources)
-                .register(io.swagger.jaxrs.listing.ApiListingResource.class)
-                .register(io.swagger.jaxrs.listing.SwaggerSerializers.class)
+                .register(OpenApiResource.class)
                 .register(ConnectionClosedExceptionMapper.class)
                 .register(RequestTrackingFilter.class)
                 .register(new ServletConfigBinder());
 
-        Sources.init(urlToAskSources);
+        // Pass the OpenAPI configuration to the resource
+        rc.property("openApi.configuration", oasConfig);
+
+        System.out.println("Initializing sources...");
+        long initStart = System.currentTimeMillis();
+        Sources.init(urlToAskSources, checkSources);
+        long initElapsed = System.currentTimeMillis() - initStart;
+        System.out.println("Sources initialized in " + initElapsed + "ms.");
 
         // Initialize graph service if enabled
         if (enableGraph) {
@@ -71,6 +86,7 @@ public class Main {
 
         // create and start a new instance of grizzly http server
         // exposing the Jersey application at BASE_URI
+        System.out.println("Starting HTTP server on " + host + ":" + port + "...");
         return GrizzlyHttpServerFactory.createHttpServer(URI.create("http://" + host + ":" + port), rc);
     }
 
@@ -85,6 +101,7 @@ public class Main {
         int port = 8080;
         String urlToAskSources = null;
         boolean enableGraph = false;
+        boolean checkSources = false;
 
         for (String arg : args) {
             if (arg.startsWith("--host=")) {
@@ -99,6 +116,9 @@ public class Main {
             } else if (arg.equals("--enable-graph")) {
                 enableGraph = true;
 
+            } else if (arg.equals("--check-sources")) {
+                checkSources = true;
+
             } else {
                 printHelp();
                 System.exit(-1);
@@ -109,7 +129,7 @@ public class Main {
             printHelp();
             System.exit(-1);
         }
-        httpServer = startServer(host, port, urlToAskSources, enableGraph);
+        httpServer = startServer(host, port, urlToAskSources, enableGraph, checkSources);
         System.out.println(String.format("Jersey app started with WADL available at \n%sapplication.wadl\n",
                 "http://" + host + ":" + port + "/"));
         
@@ -132,5 +152,6 @@ public class Main {
         System.out.println("--host=\t\tdefault:0.0.0.0");
         System.out.println("--port=\t\tdefault:8080");
         System.out.println("--enable-graph\t\tenable graph API endpoints");
+        System.out.println("--check-sources\t\tverify data source files exist on startup");
     }
 }

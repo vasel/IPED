@@ -23,8 +23,8 @@ import org.apache.tika.metadata.Metadata;
 import org.apache.tika.parser.ParseContext;
 import org.xml.sax.ContentHandler;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.data.IIPEDSource;
 import iped.data.IItem;
 import iped.engine.webapi.Text;
@@ -33,7 +33,7 @@ import iped.engine.data.IPEDSource;
 import iped.parsers.standard.StandardParser;
 import iped.parsers.util.ToXMLContentHandler;
 
-@Api(value = "Documents")
+@Tag(name = "Documents")
 @Path("/sources/{sourceID}/docs/{id}/htmlcontent")
 public class HtmlContent {
 
@@ -81,7 +81,7 @@ public class HtmlContent {
             "application/x-nfe+xml",
             "application/x-cte+xml"));
 
-    @ApiOperation(value = "Get document's content converted as HTML")
+    @Operation(summary = "Get document's content converted as HTML")
     @GET
     @Produces(MediaType.TEXT_HTML + "; charset=UTF-8")
     public static StreamingOutput htmlContent(@PathParam("sourceID") String sourceID, @PathParam("id") int id) {

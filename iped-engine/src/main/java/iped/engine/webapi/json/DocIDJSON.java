@@ -1,12 +1,11 @@
 package iped.engine.webapi.json;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * DocIDModel identifies a single document: { "source": "A", "id": 0 }
  */
-@ApiModel(value = "Document")
+@Schema(name = "Document")
 public class DocIDJSON {
     private String source;
     private int id;
@@ -19,7 +18,7 @@ public class DocIDJSON {
         this.id = id;
     }
 
-    @ApiModelProperty()
+    @Schema
     public String getSource() {
         return this.source;
     }
@@ -28,7 +27,7 @@ public class DocIDJSON {
         this.source = source;
     }
 
-    @ApiModelProperty()
+    @Schema
     public int getId() {
         return this.id;
     }

@@ -17,16 +17,16 @@ import javax.ws.rs.core.StreamingOutput;
 import org.apache.commons.io.IOUtils;
 import org.sleuthkit.datamodel.TskCoreException;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.data.IIPEDSource;
 import iped.data.IItem;
 
-@Api(value = "Documents")
+@Tag(name = "Documents")
 @Path("sources/{sourceID}/docs/{id}/content")
 public class Content {
 
-    @ApiOperation(value = "Get document's raw content")
+    @Operation(summary = "Get document's raw content")
     @GET
     @Produces(MediaType.APPLICATION_OCTET_STREAM)
     public Response content(@PathParam("sourceID") String sourceID, @PathParam("id") int id)

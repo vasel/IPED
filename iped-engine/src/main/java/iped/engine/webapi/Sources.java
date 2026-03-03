@@ -12,6 +12,11 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.NumericDocValues;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.ws.rs.GET;
 import javax.ws.rs.POST;
 import javax.ws.rs.Path;
@@ -26,9 +31,9 @@ import org.json.simple.JSONValue;
 import org.json.simple.parser.ParseException;
 import org.sleuthkit.datamodel.TskCoreException;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
-import io.swagger.annotations.ApiParam;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.data.IIPEDSource;
 import iped.engine.config.Configuration;
 import iped.engine.data.IPEDMultiSource;
@@ -37,17 +42,22 @@ import iped.engine.task.index.IndexItem;
 import iped.engine.webapi.json.DataListJSON;
 import iped.engine.webapi.json.SourceJSON;
 
-@Api(value = "Sources")
+@Tag(name = "Sources")
 @Path("sources")
 public class Sources {
+    private static final Logger LOGGER = LoggerFactory.getLogger(Sources.class);
+
     public static IPEDMultiSource multiSource = null;
     public static Map<Integer, String> sourceIntToString;
     public static Map<String, Integer> sourceStringToInt;
     public static Map<String, String> sourcePathToStringID;
     private static String sourcesUrl = null;
+    private static boolean checkSourcesFlag = false;
 
-    public static void init(String urlToAskSources) throws IOException, ParseException {
+    public static void init(String urlToAskSources, boolean checkSources) throws IOException, ParseException {
+        long totalStart = System.currentTimeMillis();
         sourcesUrl = urlToAskSources;
+        checkSourcesFlag = checkSources;
         sourceIntToString = new HashMap<Integer, String>();
         sourceStringToInt = new HashMap<String, Integer>();
         sourcePathToStringID = new HashMap<String, String>();
@@ -55,10 +65,16 @@ public class Sources {
         IPEDSource.setUseConsoleForMissingImages(true);
         IndexItem.setUseConsoleForMissingDataSources(true);
 
+        LOGGER.info("Loading sources from {}...", urlToAskSources);
+        JSONArray arr = askSources(urlToAskSources);
+        int totalSources = arr.size();
+        LOGGER.info("Found {} source(s) to load", totalSources);
+
         boolean confInited = false;
         List<IIPEDSource> sources = new ArrayList<IIPEDSource>();
-        JSONArray arr = askSources(urlToAskSources);
+        int srcIndex = 0;
         for (Object object : arr) {
+            srcIndex++;
             JSONObject jsonobj = (JSONObject) object;
             String id = (String) jsonobj.get("id");
             File file = new File((String) jsonobj.get("path"));
@@ -70,12 +86,24 @@ public class Sources {
                 confInited = true;
             }
 
+            LOGGER.info("[{}/{}] Opening source '{}' at {}...", srcIndex, totalSources, id, file);
+            long srcStart = System.currentTimeMillis();
             IPEDSource source = new IPEDSource(file);
-            source.precheckDataSources();
+            long srcElapsed = System.currentTimeMillis() - srcStart;
+            LOGGER.info("[{}/{}] Source '{}' loaded ({} items, {}ms)", srcIndex, totalSources, id,
+                    source.getTotalItems(), srcElapsed);
+
+            if (checkSources) {
+                LOGGER.info("[{}/{}] Checking data sources for '{}'...", srcIndex, totalSources, id);
+                source.precheckDataSources();
+            }
             sources.add(source);
         }
 
+        LOGGER.info("Initializing multi-source index...");
         multiSource = new IPEDMultiSource(sources);
+
+        LOGGER.info("Building source ID mappings...");
         // filling maps using path, to avoid relying on provided order
         for (int i = 0; i < multiSource.getAtomicSources().size(); i++) {
             IIPEDSource source = multiSource.getAtomicSourceBySourceId(i);
@@ -87,6 +115,9 @@ public class Sources {
             sourceStringToInt.put(id, i);
             sourceIntToString.put(i, id);
         }
+
+        long totalElapsed = System.currentTimeMillis() - totalStart;
+        LOGGER.info("All {} source(s) initialized successfully ({}ms total)", totalSources, totalElapsed);
     }
 
     public static IIPEDSource getSource(String sourceID) {
@@ -100,7 +131,7 @@ public class Sources {
         return multiSource.getAtomicSourceBySourceId(id);
     }
 
-    @ApiOperation(value = "List sources")
+    @Operation(summary = "List sources")
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public static DataListJSON<SourceJSON> listSources() throws TskCoreException, IOException {
@@ -118,10 +149,10 @@ public class Sources {
         return new DataListJSON<SourceJSON>(data);
     }
 
-    @ApiOperation(value = "Add source")
+    @Operation(summary = "Add source")
     @POST
     @Produces(MediaType.APPLICATION_JSON)
-    public synchronized static Response addSource(@ApiParam(required = true) SourceJSON sourcejson) {
+    public synchronized static Response addSource(@Parameter(required = true) SourceJSON sourcejson) {
         String id = sourcejson.getId();
         String path = sourcejson.getPath();
         if (sourceStringToInt.containsKey(id)) {
@@ -131,8 +162,12 @@ public class Sources {
 
         List<IPEDSource> sources = multiSource.getAtomicSources();
         int last = sources.size();
+        LOGGER.info("Adding new source '{}' at {}...", id, path);
         IPEDSource newSource = new IPEDSource(new File(path));
-        newSource.precheckDataSources();
+        if (checkSourcesFlag) {
+            LOGGER.info("Checking data sources for '{}'...", id);
+            newSource.precheckDataSources();
+        }
         sources.add(newSource);
         if (last + 1 != sources.size()) {
             throw new RuntimeException("concurrency error adding source");
@@ -149,7 +184,7 @@ public class Sources {
         return Response.ok().build();
     }
 
-    @ApiOperation(value = "Get source's properties")
+    @Operation(summary = "Get source's properties")
     @GET
     @Path("{sourceID}")
     @Produces(MediaType.APPLICATION_JSON)
@@ -158,7 +193,35 @@ public class Sources {
         IIPEDSource source = getSource(sourceID);
         result.setId(sourceID);
         result.setPath(source.getCaseDir().toString());
+        result.setTotalItems(source.getTotalItems());
+        result.setIndexDir(source.getIndex() != null ? source.getIndex().toString() : "");
+        result.setTotalSizeMB(computeTotalSizeMB(source));
         return result;
+    }
+
+    /**
+     * Computes total file size in MB by iterating NumericDocValues for the "size"
+     * field. This is very fast — no stored fields are loaded, just doc-value
+     * column.
+     */
+    private static double computeTotalSizeMB(IIPEDSource source) {
+        try {
+            LeafReader reader = source.getLeafReader();
+            if (reader == null)
+                return 0;
+            NumericDocValues sizeValues = reader.getNumericDocValues("size");
+            if (sizeValues == null)
+                return 0;
+            long totalBytes = 0;
+            for (int doc = 0; doc < reader.maxDoc(); doc++) {
+                if (sizeValues.advanceExact(doc)) {
+                    totalBytes += sizeValues.longValue();
+                }
+            }
+            return Math.round(totalBytes / (1024.0 * 1024.0) * 100.0) / 100.0;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private static JSONArray askSources(String urlToAskSources)
@@ -178,7 +241,7 @@ public class Sources {
         return result;
     }
 
-    @ApiOperation(value = "Reload sources")
+    @Operation(summary = "Reload sources")
     @POST
     @Path("reload")
     @Produces(MediaType.APPLICATION_JSON)
@@ -186,7 +249,7 @@ public class Sources {
         return doReload();
     }
 
-    @ApiOperation(value = "Reload sources")
+    @Operation(summary = "Reload sources")
     @GET
     @Path("reload")
     @Produces(MediaType.APPLICATION_JSON)
@@ -220,7 +283,7 @@ public class Sources {
             sourcePathToStringID.clear();
 
         // Reinitialize with the original sources URL
-        init(sourcesUrl);
+        init(sourcesUrl, checkSourcesFlag);
         return Response.ok().build();
     }
 }

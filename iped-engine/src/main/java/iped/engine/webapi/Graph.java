@@ -23,9 +23,9 @@ import org.neo4j.graphdb.Result;
 import org.neo4j.graphdb.Relationship;
 import org.neo4j.graphdb.Transaction;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
-import io.swagger.annotations.ApiParam;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.engine.graph.ConnectionQueryListener;
 import iped.engine.graph.EdgeQueryListener;
 import iped.engine.graph.GraphService;
@@ -45,13 +45,13 @@ import iped.engine.webapi.json.GraphResultJSON;
 /**
  * REST API endpoint for graph operations.
  */
-@Api(value = "Graph")
+@Tag(name = "Graph")
 @Path("graph")
 public class Graph {
 
     private static final int DEFAULT_MAX_RESULTS = 100;
 
-    @ApiOperation(value = "Get graph status")
+    @Operation(summary = "Get graph status")
     @GET
     @Path("status")
     @Produces(MediaType.APPLICATION_JSON)
@@ -63,7 +63,7 @@ public class Graph {
         return Response.ok(status).build();
     }
 
-    @ApiOperation(value = "List all available labels")
+    @Operation(summary = "List all available labels")
     @GET
     @Path("labels")
     @Produces(MediaType.APPLICATION_JSON)
@@ -81,7 +81,7 @@ public class Graph {
         return new DataListJSON<>(labels);
     }
 
-    @ApiOperation(value = "List all available relationship types (edge types)")
+    @Operation(summary = "List all available relationship types (edge types)")
     @GET
     @Path("edge-types")
     @Produces(MediaType.APPLICATION_JSON)
@@ -99,7 +99,7 @@ public class Graph {
         return new DataListJSON<>(types);
     }
 
-    @ApiOperation(value = "Get a node by ID")
+    @Operation(summary = "Get a node by ID")
     @GET
     @Path("nodes/{id}")
     @Produces(MediaType.APPLICATION_JSON)
@@ -122,12 +122,12 @@ public class Graph {
         return result.get(0);
     }
 
-    @ApiOperation(value = "Get multiple nodes by IDs")
+    @Operation(summary = "Get multiple nodes by IDs")
     @POST
     @Path("nodes")
     @Produces(MediaType.APPLICATION_JSON)
     public DataListJSON<GraphNodeJSON> getNodes(
-            @ApiParam(value = "List of node IDs", required = true) List<Long> ids) {
+            @Parameter(description = "List of node IDs", required = true) List<Long> ids) {
         GraphService gs = getService();
         List<GraphNodeJSON> nodes = new ArrayList<>();
 
@@ -142,7 +142,7 @@ public class Graph {
         return new DataListJSON<>(nodes);
     }
 
-    @ApiOperation(value = "Get neighbours of a node")
+    @Operation(summary = "Get neighbours of a node")
     @GET
     @Path("nodes/{id}/neighbours")
     @Produces(MediaType.APPLICATION_JSON)
@@ -175,7 +175,7 @@ public class Graph {
         return new GraphResultJSON(nodes, edges);
     }
 
-    @ApiOperation(value = "Get connection types for a node")
+    @Operation(summary = "Get connection types for a node")
     @GET
     @Path("nodes/{id}/connections")
     @Produces(MediaType.APPLICATION_JSON)
@@ -193,7 +193,7 @@ public class Graph {
         return Response.ok(connections).build();
     }
 
-    @ApiOperation(value = "Search nodes by text")
+    @Operation(summary = "Search nodes by text")
     @GET
     @Path("search")
     @Produces(MediaType.APPLICATION_JSON)
@@ -219,7 +219,7 @@ public class Graph {
         return new DataListJSON<>(nodes);
     }
 
-    @ApiOperation(value = "Search nodes by label (node type)")
+    @Operation(summary = "Search nodes by label (node type)")
     @GET
     @Path("nodes/by-label/{label}")
     @Produces(MediaType.APPLICATION_JSON)
@@ -240,7 +240,7 @@ public class Graph {
         return new DataListJSON<>(nodes);
     }
 
-    @ApiOperation(value = "Search edges by relationship type (edge type)")
+    @Operation(summary = "Search edges by relationship type (edge type)")
     @GET
     @Path("edges/by-type/{type}")
     @Produces(MediaType.APPLICATION_JSON)
@@ -261,12 +261,12 @@ public class Graph {
         return new DataListJSON<>(edges);
     }
 
-    @ApiOperation(value = "Find paths between two nodes")
+    @Operation(summary = "Find paths between two nodes")
     @POST
     @Path("paths")
     @Produces(MediaType.APPLICATION_JSON)
     public GraphResultJSON findPaths(
-            @ApiParam(value = "Path request containing source, target, and maxDistance") PathRequest request) {
+            @Parameter(description = "Path request containing source, target, and maxDistance") PathRequest request) {
         GraphService gs = getService();
         Set<GraphNodeJSON> nodesSet = new HashSet<>();
         List<GraphEdgeJSON> edges = new ArrayList<>();
@@ -287,7 +287,7 @@ public class Graph {
         return new GraphResultJSON(new ArrayList<>(nodesSet), edges);
     }
 
-    @ApiOperation(value = "Get most connected nodes")
+    @Operation(summary = "Get most connected nodes")
     @GET
     @Path("top-connected")
     @Produces(MediaType.APPLICATION_JSON)
@@ -308,12 +308,12 @@ public class Graph {
         return new DataListJSON<>(nodes);
     }
 
-    @ApiOperation(value = "Execute a Cypher query")
+    @Operation(summary = "Execute a Cypher query")
     @POST
     @Path("cypher")
     @Produces(MediaType.APPLICATION_JSON)
     public Response executeCypher(
-            @ApiParam(value = "Cypher query request", required = true) CypherRequest request) {
+            @Parameter(description = "Cypher query request", required = true) CypherRequest request) {
         GraphService gs = getService();
         
         // Validate query - only allow read operations

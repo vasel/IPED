@@ -18,9 +18,9 @@ import org.apache.lucene.index.LeafReaderContext;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
-import io.swagger.annotations.ApiParam;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.data.IIPEDSource;
 import iped.engine.webapi.json.DataListJSON;
 import iped.engine.webapi.json.RegexPatternJSON;
@@ -28,21 +28,21 @@ import iped.engine.webapi.json.RegexPatternJSON;
 /**
  * REST API endpoint for regex pattern statistics.
  */
-@Api(value = "Regex")
+@Tag(name = "Regex")
 @Path("regex")
 public class Regex {
 
     private static final String REGEX_PREFIX = "Regex:";
     private static final int DEFAULT_MAX_VALUES = 1000;
 
-    @ApiOperation(value = "Get aggregated regex hits statistics")
+    @Operation(summary = "Get aggregated regex hits statistics")
     @GET
     @Path("stats")
     @Produces(MediaType.APPLICATION_JSON)
     public List<RegexPatternJSON> getStats(
-            @ApiParam(value = "Maximum number of values per pattern") 
+            @Parameter(description = "Maximum number of values per pattern") 
             @QueryParam("maxValues") @DefaultValue("1000") int maxValues,
-            @ApiParam(value = "Source ID (optional, searches all sources if empty)")
+            @Parameter(description = "Source ID (optional, searches all sources if empty)")
             @QueryParam("sourceID") @DefaultValue("") String sourceID) {
         
         List<RegexPatternJSON> results = new ArrayList<>();
@@ -67,15 +67,15 @@ public class Regex {
         return results;
     }
 
-    @ApiOperation(value = "Get values for a specific regex pattern")
+    @Operation(summary = "Get values for a specific regex pattern")
     @GET
     @Path("stats/{pattern}")
     @Produces(MediaType.APPLICATION_JSON)
     public RegexPatternJSON getPatternStats(
             @PathParam("pattern") String pattern,
-            @ApiParam(value = "Maximum number of values") 
+            @Parameter(description = "Maximum number of values") 
             @QueryParam("maxValues") @DefaultValue("1000") int maxValues,
-            @ApiParam(value = "Source ID (optional, searches all sources if empty)")
+            @Parameter(description = "Source ID (optional, searches all sources if empty)")
             @QueryParam("sourceID") @DefaultValue("") String sourceID) {
         
         String fieldName = REGEX_PREFIX + pattern;
@@ -100,12 +100,12 @@ public class Regex {
         return new RegexPatternJSON(pattern, new ArrayList<>(allValues));
     }
 
-    @ApiOperation(value = "List all available regex patterns")
+    @Operation(summary = "List all available regex patterns")
     @GET
     @Path("patterns")
     @Produces(MediaType.APPLICATION_JSON)
     public DataListJSON<String> getPatterns(
-            @ApiParam(value = "Source ID (optional, searches all sources if empty)")
+            @Parameter(description = "Source ID (optional, searches all sources if empty)")
             @QueryParam("sourceID") @DefaultValue("") String sourceID) {
         
         Set<String> patterns = new HashSet<>();

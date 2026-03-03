@@ -11,9 +11,9 @@ import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
-import io.swagger.annotations.ApiParam;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.data.IItemId;
 import iped.data.IMultiBookmarks;
 import iped.engine.data.ItemId;
@@ -23,11 +23,11 @@ import iped.engine.webapi.json.SourceToIDsJSON;
 import iped.search.IIPEDSearcher;
 import iped.search.IMultiSearchResult;
 
-@Api(value = "Selection")
+@Tag(name = "Selection")
 @Path("selection")
 public class Selection {
 
-    @ApiOperation(value = "List selected documents")
+    @Operation(summary = "List selected documents")
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public SourceToIDsJSON get() throws Exception {
@@ -44,11 +44,11 @@ public class Selection {
         return new SourceToIDsJSON(docs);
     }
 
-    @ApiOperation(value = "Add documents to selection")
+    @Operation(summary = "Add documents to selection")
     @PUT
     @Path("add")
     @Consumes(MediaType.APPLICATION_JSON)
-    public Response add(@ApiParam(required = true) DocIDJSON[] docs) {
+    public Response add(@Parameter(required = true) DocIDJSON[] docs) {
         IMultiBookmarks mm = Sources.multiSource.getMultiBookmarks();
         for (DocIDJSON d : docs) {
             mm.setChecked(true, new ItemId(Sources.sourceStringToInt.get(d.getSource()), d.getId()));
@@ -57,11 +57,11 @@ public class Selection {
         return Response.ok().build();
     }
 
-    @ApiOperation(value = "Remove documents from selection")
+    @Operation(summary = "Remove documents from selection")
     @PUT
     @Path("remove")
     @Consumes(MediaType.APPLICATION_JSON)
-    public Response remove(@ApiParam(required = true) DocIDJSON[] docs) {
+    public Response remove(@Parameter(required = true) DocIDJSON[] docs) {
         IMultiBookmarks mm = Sources.multiSource.getMultiBookmarks();
         for (DocIDJSON d : docs) {
             mm.setChecked(false, new ItemId(Sources.sourceStringToInt.get(d.getSource()), d.getId()));

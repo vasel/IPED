@@ -5,7 +5,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * SourceToIDsModel lists documents grouped by source: { "data": [ { "source":
@@ -42,7 +42,7 @@ public class SourceToIDsJSON {
         }
     }
 
-    @ApiModelProperty(value = "Total number of results")
+    @Schema(description = "Total number of results")
     public int getTotal() {
         return total;
     }
@@ -51,7 +51,7 @@ public class SourceToIDsJSON {
         this.total = total;
     }
 
-    @ApiModelProperty(value = "Starting offset")
+    @Schema(description = "Starting offset")
     public int getStart() {
         return start;
     }
@@ -60,7 +60,7 @@ public class SourceToIDsJSON {
         this.start = start;
     }
 
-    @ApiModelProperty(value = "Number of rows requested")
+    @Schema(description = "Number of rows requested")
     public int getRows() {
         return rows;
     }
@@ -69,7 +69,7 @@ public class SourceToIDsJSON {
         this.rows = rows;
     }
 
-    @ApiModelProperty(value = "List of document IDs grouped by source")
+    @Schema(description = "List of document IDs grouped by source")
     public List<DocIDGroupJSON> getData() {
         List<DocIDGroupJSON> result = new ArrayList<DocIDGroupJSON>();
         for (Map.Entry<String, List<Integer>> entry : this.sourceToids.entrySet()) {

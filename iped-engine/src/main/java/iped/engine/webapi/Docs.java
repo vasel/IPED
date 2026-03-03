@@ -13,16 +13,16 @@ import javax.ws.rs.core.MediaType;
 import org.apache.lucene.document.Document;
 import org.apache.lucene.index.IndexableField;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.data.IIPEDSource;
 import iped.engine.webapi.json.DocPropsJSON;
 
-@Api(value = "Documents")
+@Tag(name = "Documents")
 @Path("sources/{sourceID}/docs")
 public class Docs {
 
-    @ApiOperation(value = "Get document's properties")
+    @Operation(summary = "Get document's properties")
     @GET
     @Path("{id}")
     @Produces(MediaType.APPLICATION_JSON)

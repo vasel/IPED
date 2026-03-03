@@ -1,12 +1,11 @@
 package iped.engine.webapi.json;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * JSON representation of a graph label with its count.
  */
-@ApiModel(value = "GraphLabel")
+@Schema(name = "GraphLabel")
 public class GraphLabelJSON {
     private String name;
     private long count;
@@ -19,7 +18,7 @@ public class GraphLabelJSON {
         this.count = count;
     }
 
-    @ApiModelProperty(value = "Label name")
+    @Schema(description = "Label name")
     public String getName() {
         return name;
     }
@@ -28,7 +27,7 @@ public class GraphLabelJSON {
         this.name = name;
     }
 
-    @ApiModelProperty(value = "Number of nodes with this label")
+    @Schema(description = "Number of nodes with this label")
     public long getCount() {
         return count;
     }

@@ -2,13 +2,12 @@ package iped.engine.webapi.json;
 
 import java.util.List;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * JSON representation of regex pattern statistics.
  */
-@ApiModel(value = "RegexPattern")
+@Schema(name = "RegexPattern")
 public class RegexPatternJSON {
     
     private String pattern;
@@ -22,7 +21,7 @@ public class RegexPatternJSON {
         this.values = values;
     }
 
-    @ApiModelProperty(value = "Pattern name (without 'Regex:' prefix)")
+    @Schema(description = "Pattern name (without 'Regex:' prefix)")
     public String getPattern() {
         return pattern;
     }
@@ -31,7 +30,7 @@ public class RegexPatternJSON {
         this.pattern = pattern;
     }
 
-    @ApiModelProperty(value = "List of unique values found for this pattern")
+    @Schema(description = "List of unique values found for this pattern")
     public List<String> getValues() {
         return values;
     }

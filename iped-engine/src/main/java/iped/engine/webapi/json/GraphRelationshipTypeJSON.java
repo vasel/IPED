@@ -1,12 +1,11 @@
 package iped.engine.webapi.json;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * JSON representation of a graph relationship type with its count.
  */
-@ApiModel(value = "GraphRelationshipType")
+@Schema(name = "GraphRelationshipType")
 public class GraphRelationshipTypeJSON {
     private String name;
     private long count;
@@ -19,7 +18,7 @@ public class GraphRelationshipTypeJSON {
         this.count = count;
     }
 
-    @ApiModelProperty(value = "Relationship type name")
+    @Schema(description = "Relationship type name")
     public String getName() {
         return name;
     }
@@ -28,7 +27,7 @@ public class GraphRelationshipTypeJSON {
         this.name = name;
     }
 
-    @ApiModelProperty(value = "Number of edges with this type")
+    @Schema(description = "Number of edges with this type")
     public long getCount() {
         return count;
     }

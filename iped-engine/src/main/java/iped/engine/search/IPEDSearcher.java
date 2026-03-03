@@ -30,6 +30,10 @@ import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TopFieldDocs;
+
+import iped.data.IItemId;
+import iped.engine.data.ItemId;
 
 import iped.engine.data.IPEDMultiSource;
 import iped.engine.data.IPEDSource;
@@ -138,6 +142,136 @@ public class IPEDSearcher implements IIPEDSearcher {
 
     public LuceneSearchResult luceneSearch() throws IOException {
         return searchAll();
+    }
+
+    /**
+     * Prepares the query applying the same transformations as searchAll():
+     * MatchAllDocsQuery rewrite, query rewriting, and tree-node filtering.
+     */
+    private Query prepareQuery() {
+        Query q = this.query;
+        if (q instanceof MatchAllDocsQuery) {
+            q = QueryBuilder.getMatchAllItemsQuery();
+        } else if (rewriteQuery) {
+            q = new QueryBuilder(ipedCase, true).rewriteQuery(q);
+        }
+        if (!treeQuery) {
+            q = getNonTreeQuery(q);
+        }
+        return q;
+    }
+
+    /**
+     * Returns the total number of matching documents without materializing results.
+     * Uses Lucene's optimized count() which avoids collecting all documents.
+     */
+    public int count() throws IOException {
+        return ipedCase.getSearcher().count(prepareQuery());
+    }
+
+    /**
+     * Paginated search for a single IPEDSource. Returns only the requested page
+     * of IPED item IDs plus the total hit count. Much faster than search() when
+     * only a small window of results is needed, as it avoids materializing all
+     * matching documents.
+     *
+     * @param start zero-based offset of the first result to return
+     * @param rows  maximum number of results to return
+     * @param totalHits single-element array; totalHits[0] is set to the total count
+     * @return SearchResult containing only the requested page
+     */
+    public SearchResult searchPaged(int start, int rows, int[] totalHits) throws IOException {
+        return searchPaged(start, rows, totalHits, null);
+    }
+
+    /**
+     * Paginated search for a single IPEDSource with optional sorting.
+     *
+     * @param start zero-based offset of the first result to return
+     * @param rows  maximum number of results to return
+     * @param totalHits single-element array; totalHits[0] is set to the total count
+     * @param sortOverride optional Sort to apply; if null, uses doc-id order
+     * @return SearchResult containing only the requested page
+     */
+    public SearchResult searchPaged(int start, int rows, int[] totalHits, Sort sortOverride) throws IOException {
+        if (ipedCase instanceof IPEDMultiSource)
+            throw new UnsupportedOperationException("Use multiSearchPaged() for IPEDMultiSource!");
+
+        Query q = prepareQuery();
+        int total = ipedCase.getSearcher().count(q);
+        totalHits[0] = total;
+
+        if (total == 0 || start >= total || rows <= 0) {
+            return new SearchResult(new int[0], new float[0]);
+        }
+
+        int numToCollect = Math.min(start + rows, total);
+        Sort sort = sortOverride != null ? sortOverride : new Sort(SortField.FIELD_DOC);
+        TopFieldDocs topDocs = ipedCase.getSearcher().search(q, numToCollect, sort);
+        ScoreDoc[] scoreDocs = topDocs.scoreDocs;
+
+        int pageStart = Math.min(start, scoreDocs.length);
+        int pageEnd = Math.min(start + rows, scoreDocs.length);
+        int pageSize = pageEnd - pageStart;
+
+        int[] ids = new int[pageSize];
+        float[] scores = new float[pageSize];
+        for (int i = 0; i < pageSize; i++) {
+            ids[i] = ipedCase.getId(scoreDocs[pageStart + i].doc);
+            scores[i] = scoreDocs[pageStart + i].score;
+        }
+        return new SearchResult(ids, scores);
+    }
+
+    /**
+     * Paginated search for an IPEDMultiSource. Returns only the requested page
+     * of IItemId results plus the total hit count.
+     *
+     * @param start zero-based offset of the first result to return
+     * @param rows  maximum number of results to return
+     * @param totalHits single-element array; totalHits[0] is set to the total count
+     * @return array of IItemId containing only the requested page
+     */
+    public IItemId[] multiSearchPaged(int start, int rows, int[] totalHits) throws IOException {
+        return multiSearchPaged(start, rows, totalHits, null);
+    }
+
+    /**
+     * Paginated search for an IPEDMultiSource with optional sorting.
+     *
+     * @param start zero-based offset of the first result to return
+     * @param rows  maximum number of results to return
+     * @param totalHits single-element array; totalHits[0] is set to the total count
+     * @param sortOverride optional Sort to apply; if null, uses doc-id order
+     * @return array of IItemId containing only the requested page
+     */
+    public IItemId[] multiSearchPaged(int start, int rows, int[] totalHits, Sort sortOverride) throws IOException {
+        if (!(ipedCase instanceof IPEDMultiSource))
+            throw new UnsupportedOperationException("Use searchPaged() for single IPEDSource!");
+
+        IPEDMultiSource multiSource = (IPEDMultiSource) ipedCase;
+        Query q = prepareQuery();
+        int total = multiSource.getSearcher().count(q);
+        totalHits[0] = total;
+
+        if (total == 0 || start >= total || rows <= 0) {
+            return new IItemId[0];
+        }
+
+        int numToCollect = Math.min(start + rows, total);
+        Sort sort = sortOverride != null ? sortOverride : new Sort(SortField.FIELD_DOC);
+        TopFieldDocs topDocs = multiSource.getSearcher().search(q, numToCollect, sort);
+        ScoreDoc[] scoreDocs = topDocs.scoreDocs;
+
+        int pageStart = Math.min(start, scoreDocs.length);
+        int pageEnd = Math.min(start + rows, scoreDocs.length);
+        int pageSize = pageEnd - pageStart;
+
+        IItemId[] result = new IItemId[pageSize];
+        for (int i = 0; i < pageSize; i++) {
+            result[i] = multiSource.getItemId(scoreDocs[pageStart + i].doc);
+        }
+        return result;
     }
 
     private LuceneSearchResult searchAll() throws IOException {

@@ -2,12 +2,19 @@ package iped.engine.webapi;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import org.apache.lucene.index.LeafReader;
+import org.apache.lucene.index.NumericDocValues;
 
 import org.sleuthkit.datamodel.SleuthkitCase;
 import org.sleuthkit.datamodel.TskCoreException;
@@ -16,6 +23,7 @@ import iped.engine.sleuthkit.SleuthkitInputStreamFactory;
 
 import iped.data.IIPEDSource;
 import iped.engine.data.IPEDSource;
+import iped.engine.task.index.IndexItem;
 import iped.utils.UTF8Properties;
 
 /**
@@ -27,16 +35,57 @@ public class RequestMonitorConsole implements Runnable {
     private static final long SLOW_THRESHOLD_MS = 1000;
 
     // ANSI color codes
-    private static final String RESET  = "\033[0m";
-    private static final String GREEN  = "\033[32m";
-    private static final String RED    = "\033[31m";
+    private static final String RESET = "\033[0m";
+    private static final String GREEN = "\033[32m";
+    private static final String RED = "\033[31m";
     private static final String YELLOW = "\033[33m";
-    private static final String BOLD   = "\033[1m";
-    private static final String DIM    = "\033[2m";
+    private static final String BOLD = "\033[1m";
+    private static final String DIM = "\033[2m";
     private static final String CLEAR_SCREEN = "\033[H\033[2J";
 
     private volatile boolean running = true;
     private volatile boolean watchMode = false;
+
+    // Singleton instance for stdin sharing
+    private static volatile RequestMonitorConsole instance;
+
+    // Flag set by external threads to redirect the next readLine() to them.
+    private final AtomicBoolean externalInputPending = new AtomicBoolean(false);
+
+    // Queue used to deliver the line read by the console loop to the external
+    // thread.
+    private final SynchronousQueue<String> externalLineResponse = new SynchronousQueue<>();
+
+    public static RequestMonitorConsole getInstance() {
+        return instance;
+    }
+
+    /**
+     * Called from any thread (e.g. HTTP request thread) that needs to read
+     * a line from stdin while the console loop is running.
+     * Sets a flag so the console loop forwards the next line here
+     * instead of processing it as a command.
+     *
+     * @param prompt ignored (prompt is already printed by the caller)
+     * @return the line read from stdin
+     * @throws IOException if interrupted or stdin is closed
+     */
+    public String readLineFromConsole(String prompt) throws IOException {
+        externalInputPending.set(true);
+        try {
+            // Wait for the console loop to read a line and forward it here
+            String line = externalLineResponse.take();
+            if ("__EOF__".equals(line)) {
+                throw new IOException("stdin closed");
+            }
+            return line;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while waiting for console input", e);
+        } finally {
+            externalInputPending.set(false);
+        }
+    }
 
     public void stop() {
         running = false;
@@ -44,21 +93,50 @@ public class RequestMonitorConsole implements Runnable {
 
     @Override
     public void run() {
+        instance = this;
+        // Register the shared stdin reader so IndexItem doesn't create
+        // a competing BufferedReader on System.in
+        IndexItem.setConsoleLineReader(p -> readLineFromConsole(p));
         printHelp();
-        
+
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(System.in))) {
             while (running) {
                 System.out.print("\niped-webapi> ");
+                System.out.flush();
                 String line = reader.readLine();
+
                 if (line == null) {
+                    // stdin closed — if an external thread is waiting, unblock it
+                    if (externalInputPending.getAndSet(false)) {
+                        try {
+                            externalLineResponse.offer("__EOF__", 2, TimeUnit.SECONDS);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                        }
+                    }
                     break;
                 }
-                
+
+                // If an external thread is waiting for input, forward this line to it
+                if (externalInputPending.get()) {
+                    try {
+                        boolean delivered = externalLineResponse.offer(line, 5, TimeUnit.SECONDS);
+                        if (!delivered) {
+                            // External thread probably died — reset and process as command
+                            externalInputPending.set(false);
+                        } else {
+                            continue;
+                        }
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+
                 String trimmed = line.trim();
                 if (trimmed.isEmpty()) {
                     continue;
                 }
-                
+
                 try {
                     processCommand(trimmed.toLowerCase(), trimmed, reader);
                 } catch (Exception e) {
@@ -73,30 +151,30 @@ public class RequestMonitorConsole implements Runnable {
     private void processCommand(String line, String originalLine, BufferedReader reader) throws Exception {
         String[] parts = line.split("\\s+");
         String cmd = parts[0];
-        
+
         switch (cmd) {
             case "help":
             case "h":
             case "?":
                 printHelp();
                 break;
-                
+
             case "active":
             case "a":
                 listActiveRequests();
                 break;
-                
+
             case "history":
             case "hist":
                 int limit = parts.length > 1 ? Integer.parseInt(parts[1]) : 20;
                 listHistory(limit);
                 break;
-                
+
             case "status":
             case "s":
                 printStatus();
                 break;
-                
+
             case "cancel":
             case "kill":
             case "k":
@@ -109,7 +187,7 @@ public class RequestMonitorConsole implements Runnable {
                     cancelRequest(Long.parseLong(parts[1]));
                 }
                 break;
-                
+
             case "info":
             case "i":
                 if (parts.length < 2) {
@@ -127,14 +205,14 @@ public class RequestMonitorConsole implements Runnable {
                     showRequestStack(Long.parseLong(parts[1]), frames);
                 }
                 break;
-                
+
             case "clear":
             case "cls":
                 // Clear screen (ANSI escape code)
                 System.out.print("\033[H\033[2J");
                 System.out.flush();
                 break;
-                
+
             case "watch":
             case "w":
             case "live":
@@ -177,7 +255,7 @@ public class RequestMonitorConsole implements Runnable {
             case "stop":
                 shutdownServer(reader);
                 break;
-                
+
             default:
                 System.out.println("Unknown command: " + cmd + ". Type 'help' for available commands.");
         }
@@ -266,8 +344,8 @@ public class RequestMonitorConsole implements Runnable {
                 + ", max " + formatDuration(max));
         if (methodFilter != null || pathFilter != null) {
             System.out.println("Filter:        "
-                + (methodFilter != null ? methodFilter.toUpperCase() : "*")
-                + " " + (pathFilter != null ? pathFilter : "*"));
+                    + (methodFilter != null ? methodFilter.toUpperCase() : "*")
+                    + " " + (pathFilter != null ? pathFilter : "*"));
         }
         System.out.println("Sort:          " + (sortByP95 ? "p95" : "total"));
 
@@ -404,97 +482,97 @@ public class RequestMonitorConsole implements Runnable {
 
     private void listActiveRequests() {
         List<RequestTracker.RequestInfo> active = RequestTracker.getInstance().getActiveRequests();
-        
+
         if (active.isEmpty()) {
             System.out.println("No active requests.");
             return;
         }
-        
+
         System.out.println("\n=== Active Requests (" + active.size() + ") ===");
-        System.out.println(String.format("%-6s %-8s %-50s %-10s %-12s", 
-                "ID", "METHOD", "PATH", "DURATION", "THREAD"));
-        System.out.println("-".repeat(90));
-        
+        System.out.println(String.format("%-6s %-8s %-10s %-30s %s",
+                "ID", "METHOD", "DURATION", "THREAD", "PATH"));
+        System.out.println("-".repeat(120));
+
         for (RequestTracker.RequestInfo req : active) {
-            String path = truncate(req.getFullPath(), 50);
             String duration = formatDuration(req.getDurationMs());
-            String threadName = truncate(req.getThread().getName(), 12);
-            
+            String threadName = req.getThread().getName();
+
             // Highlight long-running requests
             String marker = req.getDurationMs() > SLOW_THRESHOLD_MS ? " [SLOW!]" : "";
-            
-            System.out.println(String.format("%-6d %-8s %-50s %-10s %-12s%s", 
-                    req.getId(), req.getMethod(), path, duration, threadName, marker));
+
+            System.out.println(String.format("%-6d %-8s %-10s %-30s %s%s",
+                    req.getId(), req.getMethod(), duration, threadName, req.getFullPath(), marker));
         }
     }
 
     private void listHistory(int limit) {
         List<RequestTracker.RequestInfo> history = RequestTracker.getInstance().getCompletedRequests();
-        
+
         if (history.isEmpty()) {
             System.out.println("No request history.");
             return;
         }
-        
+
         int count = Math.min(limit, history.size());
         System.out.println("\n=== Recent Requests (last " + count + ") ===");
-        System.out.println(String.format("%-6s %-8s %-45s %-10s %-10s %-6s", 
-                "ID", "METHOD", "PATH", "STATUS", "DURATION", "HTTP"));
-        System.out.println("-".repeat(90));
-        
+        System.out.println(String.format("%-6s %-8s %-10s %-10s %-6s %s",
+                "ID", "METHOD", "STATUS", "DURATION", "HTTP", "PATH"));
+        System.out.println("-".repeat(120));
+
         for (int i = 0; i < count; i++) {
             RequestTracker.RequestInfo req = history.get(i);
-            String path = truncate(req.getFullPath(), 45);
             String duration = formatDuration(req.getDurationMs());
             String status = req.getStatus().toString();
             String httpCode = req.getStatusCode() > 0 ? String.valueOf(req.getStatusCode()) : "-";
-            
-            System.out.println(String.format("%-6d %-8s %-45s %-10s %-10s %-6s", 
-                    req.getId(), req.getMethod(), path, status, duration, httpCode));
+
+            System.out.println(String.format("%-6d %-8s %-10s %-10s %-6s %s",
+                    req.getId(), req.getMethod(), status, duration, httpCode, req.getFullPath()));
         }
     }
 
     private void printStatus() {
         List<RequestTracker.RequestInfo> active = RequestTracker.getInstance().getActiveRequests();
         List<RequestTracker.RequestInfo> history = RequestTracker.getInstance().getCompletedRequests();
-        
+
         long slowRequests = active.stream()
                 .filter(r -> r.getDurationMs() > SLOW_THRESHOLD_MS)
                 .count();
-        
+
         long failedRecent = history.stream()
                 .limit(50)
                 .filter(r -> r.getStatus() == RequestTracker.Status.FAILED)
                 .count();
-        
+
         System.out.println("\n=== Server Status ===");
         System.out.println("Active requests:     " + active.size());
         System.out.println("Slow requests (>30s):" + slowRequests);
         System.out.println("Recent failures:     " + failedRecent + " (of last 50)");
         System.out.println("Total in history:    " + history.size());
-        
+
         if (slowRequests > 0) {
-            System.out.println("\n[WARNING] Slow requests (>" + SLOW_THRESHOLD_MS + "ms) detected! Use 'active' to see details.");
+            System.out.println(
+                    "\n[WARNING] Slow requests (>" + SLOW_THRESHOLD_MS + "ms) detected! Use 'active' to see details.");
         }
     }
 
     private void showRequestInfo(long id) {
         RequestTracker.RequestInfo req = RequestTracker.getInstance().getRequest(id);
-        
+
         if (req == null) {
             System.out.println("Request not found: " + id);
             return;
         }
-        
+
         System.out.println("\n=== Request #" + id + " ===");
         System.out.println("Method:     " + req.getMethod());
         System.out.println("Path:       " + req.getPath());
         System.out.println("Query:      " + (req.getQueryString() != null ? req.getQueryString() : "(none)"));
         System.out.println("Status:     " + req.getStatus());
         System.out.println("HTTP Code:  " + (req.getStatusCode() > 0 ? req.getStatusCode() : "-"));
-        System.out.println("Started:    " + TIME_FORMAT.format(req.getStartTime().atZone(java.time.ZoneId.systemDefault())));
+        System.out.println(
+                "Started:    " + TIME_FORMAT.format(req.getStartTime().atZone(java.time.ZoneId.systemDefault())));
         System.out.println("Duration:   " + formatDuration(req.getDurationMs()));
-        
+
         if (req.getThread() != null) {
             Thread t = req.getThread();
             System.out.println("Thread:     " + t.getName() + " [" + t.getState() + "]");
@@ -503,11 +581,11 @@ public class RequestMonitorConsole implements Runnable {
                 System.out.println("At:         " + stack[0].toString());
             }
         }
-        
+
         if (req.getError() != null) {
             System.out.println("Error:      " + req.getError());
         }
-        
+
         if (req.isCancelled()) {
             System.out.println("[CANCELLED]");
         }
@@ -535,17 +613,17 @@ public class RequestMonitorConsole implements Runnable {
 
     private void cancelRequest(long id) {
         RequestTracker.RequestInfo req = RequestTracker.getInstance().getRequest(id);
-        
+
         if (req == null) {
             System.out.println("Request not found: " + id);
             return;
         }
-        
+
         if (req.getStatus() != RequestTracker.Status.IN_PROGRESS) {
             System.out.println("Request is not active (status: " + req.getStatus() + ")");
             return;
         }
-        
+
         boolean cancelled = RequestTracker.getInstance().cancelRequest(id);
         if (cancelled) {
             System.out.println("Request #" + id + " has been interrupted.");
@@ -661,6 +739,7 @@ public class RequestMonitorConsole implements Runnable {
             System.out.println("  Index dir:   " + indexDir);
             System.out.println("  Base dir:    " + baseDir);
             System.out.println("  Items:       " + source.getTotalItems());
+            System.out.println("  Total size:  " + formatSizeMB(computeTotalSizeMB(source)));
 
             // Sleuthkit case info
             File expectedSleuthFile = new File(caseDir, IPEDSource.SLEUTH_DB);
@@ -716,7 +795,10 @@ public class RequestMonitorConsole implements Runnable {
                                 + ex.getMessage() + RESET);
                     } finally {
                         if (tmpCase != null) {
-                            try { tmpCase.close(); } catch (Exception ignore) { }
+                            try {
+                                tmpCase.close();
+                            } catch (Exception ignore) {
+                            }
                         }
                     }
                 } else {
@@ -848,19 +930,18 @@ public class RequestMonitorConsole implements Runnable {
                 if (active.isEmpty()) {
                     System.out.println(DIM + "  (none)" + RESET);
                 } else {
-                    System.out.println(GREEN + String.format("  %-6s %-7s %-45s %-10s %-12s",
-                            "ID", "METHOD", "PATH", "DURATION", "THREAD") + RESET);
+                    System.out.println(GREEN + String.format("  %-6s %-7s %-10s %-30s %s",
+                            "ID", "METHOD", "DURATION", "THREAD", "PATH") + RESET);
                     for (RequestTracker.RequestInfo req : active) {
-                        String path = truncate(req.getFullPath(), 45);
                         String duration = formatDuration(req.getDurationMs());
-                        String threadName = truncate(req.getThread().getName(), 12);
+                        String threadName = req.getThread().getName();
                         boolean slow = req.getDurationMs() > SLOW_THRESHOLD_MS;
 
                         String color = slow ? RED + BOLD : GREEN;
                         String suffix = slow ? " [SLOW!]" : "";
 
-                        System.out.println(color + String.format("  %-6d %-7s %-45s %-10s %-12s%s",
-                                req.getId(), req.getMethod(), path, duration, threadName, suffix) + RESET);
+                        System.out.println(color + String.format("  %-6d %-7s %-10s %-30s %s%s",
+                                req.getId(), req.getMethod(), duration, threadName, req.getFullPath(), suffix) + RESET);
                     }
                 }
                 System.out.println();
@@ -871,11 +952,10 @@ public class RequestMonitorConsole implements Runnable {
                 if (history.isEmpty()) {
                     System.out.println(DIM + "  (none)" + RESET);
                 } else {
-                    System.out.println(DIM + String.format("  %-6s %-7s %-40s %-10s %-10s %-6s",
-                            "ID", "METHOD", "PATH", "STATUS", "DURATION", "HTTP") + RESET);
+                    System.out.println(DIM + String.format("  %-6s %-7s %-10s %-10s %-6s %s",
+                            "ID", "METHOD", "STATUS", "DURATION", "HTTP", "PATH") + RESET);
                     for (int i = 0; i < count; i++) {
                         RequestTracker.RequestInfo req = history.get(i);
-                        String path = truncate(req.getFullPath(), 40);
                         String duration = formatDuration(req.getDurationMs());
                         String status = req.getStatus().toString();
                         String httpCode = req.getStatusCode() > 0 ? String.valueOf(req.getStatusCode()) : "-";
@@ -894,8 +974,8 @@ public class RequestMonitorConsole implements Runnable {
                             color = ""; // default terminal color (white)
                         }
 
-                        String line = String.format("  %-6d %-7s %-40s %-10s %-10s %-6s",
-                                req.getId(), req.getMethod(), path, status, duration, httpCode);
+                        String line = String.format("  %-6d %-7s %-10s %-10s %-6s %s",
+                                req.getId(), req.getMethod(), status, duration, httpCode, req.getFullPath());
                         if (!color.isEmpty()) {
                             System.out.println(color + line + RESET);
                         } else {
@@ -952,8 +1032,41 @@ public class RequestMonitorConsole implements Runnable {
     }
 
     private String truncate(String s, int maxLen) {
-        if (s == null) return "";
-        if (s.length() <= maxLen) return s;
+        if (s == null)
+            return "";
+        if (s.length() <= maxLen)
+            return s;
         return s.substring(0, maxLen - 3) + "...";
+    }
+
+    /**
+     * Computes total file size in MB by iterating NumericDocValues for the "size"
+     * field. Very fast - no stored fields are loaded.
+     */
+    private double computeTotalSizeMB(IPEDSource source) {
+        try {
+            LeafReader reader = source.getLeafReader();
+            if (reader == null)
+                return 0;
+            NumericDocValues sizeValues = reader.getNumericDocValues("size");
+            if (sizeValues == null)
+                return 0;
+            long totalBytes = 0;
+            for (int doc = 0; doc < reader.maxDoc(); doc++) {
+                if (sizeValues.advanceExact(doc)) {
+                    totalBytes += sizeValues.longValue();
+                }
+            }
+            return Math.round(totalBytes / (1024.0 * 1024.0) * 100.0) / 100.0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private String formatSizeMB(double mb) {
+        if (mb >= 1024) {
+            return String.format("%.2f GB", mb / 1024.0);
+        }
+        return String.format("%.2f MB", mb);
     }
 }

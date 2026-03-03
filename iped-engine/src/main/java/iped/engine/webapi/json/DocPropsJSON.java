@@ -3,7 +3,7 @@ package iped.engine.webapi.json;
 import java.util.List;
 import java.util.Map;
 
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * DocPropsModel list properties of a document: { "source": "A", "id": 0,
@@ -18,7 +18,7 @@ public class DocPropsJSON {
     private List<String> bookmarks;
     private boolean selected;
 
-    @ApiModelProperty()
+    @Schema
     public String getSource() {
         return source;
     }
@@ -27,7 +27,7 @@ public class DocPropsJSON {
         this.source = source;
     }
 
-    @ApiModelProperty()
+    @Schema
     public int getId() {
         return id;
     }
@@ -36,7 +36,7 @@ public class DocPropsJSON {
         this.id = id;
     }
 
-    @ApiModelProperty()
+    @Schema
     public int getLuceneId() {
         return luceneId;
     }
@@ -45,7 +45,7 @@ public class DocPropsJSON {
         this.luceneId = luceneId;
     }
 
-    @ApiModelProperty()
+    @Schema
     public Map<String, String[]> getProperties() {
         return properties;
     }
@@ -54,7 +54,7 @@ public class DocPropsJSON {
         this.properties = properties;
     }
 
-    @ApiModelProperty()
+    @Schema
     public List<String> getBookmarks() {
         return bookmarks;
     }
@@ -63,7 +63,7 @@ public class DocPropsJSON {
         this.bookmarks = bookmarks;
     }
 
-    @ApiModelProperty()
+    @Schema
     public boolean isSelected() {
         return selected;
     }

@@ -126,6 +126,27 @@ public class IndexItem extends BasicProps {
 
     private static volatile boolean useConsoleForMissingDataSources = false;
 
+    /**
+     * Optional callback for reading a line from the console.
+     * When set (e.g. by RequestMonitorConsole), stdin reads go through
+     * this callback so there is only one BufferedReader on System.in.
+     * The function receives null (no prompt needed here) and returns the line.
+     */
+    private static volatile ConsoleLineReader consoleLineReader = null;
+
+    @FunctionalInterface
+    public interface ConsoleLineReader {
+        String readLine(String prompt) throws IOException;
+    }
+
+    public static void setConsoleLineReader(ConsoleLineReader reader) {
+        consoleLineReader = reader;
+    }
+
+    public static void setUseConsoleForMissingDataSources(boolean enabled) {
+        useConsoleForMissingDataSources = enabled;
+    }
+
     public static final char EVENT_IDX_SEPARATOR = ';';
     public static final char EVENT_IDX_SEPARATOR2 = ',';
     public static final String EVENT_SEPARATOR = " | ";
@@ -461,7 +482,8 @@ public class IndexItem extends BasicProps {
         }
 
         byte[] similarityFeatures = (byte[]) evidence.getExtraAttribute(ImageSimilarityTask.IMAGE_FEATURES);
-        // clear extra property to don't add it again later when iterating over extra props
+        // clear extra property to don't add it again later when iterating over extra
+        // props
         evidence.getExtraAttributeMap().remove(ImageSimilarityTask.IMAGE_FEATURES);
         if (similarityFeatures != null) {
             doc.add(new BinaryDocValuesField(ImageSimilarityTask.IMAGE_FEATURES, new BytesRef(similarityFeatures)));
@@ -871,9 +893,10 @@ public class IndexItem extends BasicProps {
                     SeekableInputStreamFactory sisf = inputStreamFactories.get(sourcePath);
                     if (sisf == null) {
                         @SuppressWarnings("unchecked")
-                        Class<SeekableInputStreamFactory> clazz = (Class<SeekableInputStreamFactory>) Class.forName(className);
+                        Class<SeekableInputStreamFactory> clazz = (Class<SeekableInputStreamFactory>) Class
+                                .forName(className);
                         try {
-                            Constructor<SeekableInputStreamFactory> c =  clazz.getConstructor(Path.class);
+                            Constructor<SeekableInputStreamFactory> c = clazz.getConstructor(Path.class);
                             sisf = c.newInstance(Path.of(sourcePath));
 
                         } catch (NoSuchMethodException e) {
@@ -922,9 +945,11 @@ public class IndexItem extends BasicProps {
                         boolean isImage = MetadataUtil.isImageType(evidence.getMediaType());
                         boolean isVideo = MetadataUtil.isVideoType(evidence.getMediaType());
                         if (isImage || isVideo) {
-                            String thumbFolder = isImage ? ThumbTask.THUMBS_FOLDER_NAME : PreviewConstants.VIEW_FOLDER_NAME;
+                            String thumbFolder = isImage ? ThumbTask.THUMBS_FOLDER_NAME
+                                    : PreviewConstants.VIEW_FOLDER_NAME;
                             String thumbExt = isImage ? ThumbTask.THUMB_EXT : VideoThumbTask.PREVIEW_EXT;
-                            File thumbFile = Util.getFileFromHash(new File(outputBase, thumbFolder), evidence.getHash(), thumbExt);
+                            File thumbFile = Util.getFileFromHash(new File(outputBase, thumbFolder), evidence.getHash(),
+                                    thumbExt);
                             try {
                                 if (thumbFile.exists()) {
                                     evidence.setThumb(Files.readAllBytes(thumbFile.toPath()));
@@ -941,7 +966,8 @@ public class IndexItem extends BasicProps {
                     evidence.setExtraAttribute(ImageSimilarityTask.IMAGE_FEATURES, bytesRef.bytes);
                 }
 
-                viewFile = Util.findFileFromHash(new File(outputBase, PreviewConstants.VIEW_FOLDER_NAME), evidence.getHash());
+                viewFile = Util.findFileFromHash(new File(outputBase, PreviewConstants.VIEW_FOLDER_NAME),
+                        evidence.getHash());
                 if (viewFile != null) {
                     evidence.setViewFile(viewFile);
                 }
@@ -1062,15 +1088,33 @@ public class IndexItem extends BasicProps {
     }
 
     private static Path askDataSourcePathInConsole(Path missingPath) throws IOException {
-        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+        // If a shared console reader is registered (e.g. from RequestMonitorConsole),
+        // use it so we don't create a competing BufferedReader on System.in.
+        ConsoleLineReader sharedReader = consoleLineReader;
+        BufferedReader fallbackReader = sharedReader == null
+                ? new BufferedReader(new InputStreamReader(System.in))
+                : null;
         while (true) {
             System.out.println("Missing data source: " + missingPath.toString());
-            System.out.print("Enter new path: ");
-            String line = reader.readLine();
+            String prompt = "Enter new path: ";
+            String line;
+            if (sharedReader != null) {
+                System.out.print(prompt);
+                line = sharedReader.readLine(prompt);
+            } else {
+                System.out.print(prompt);
+                line = fallbackReader.readLine();
+            }
             if (line == null) {
                 throw new IOException("Data source path not provided");
             }
+            // Strip surrounding quotes if present (user may paste quoted paths)
             String trimmed = line.trim();
+            if (trimmed.length() >= 2
+                    && ((trimmed.startsWith("\"") && trimmed.endsWith("\""))
+                            || (trimmed.startsWith("'") && trimmed.endsWith("'")))) {
+                trimmed = trimmed.substring(1, trimmed.length() - 1).trim();
+            }
             if (trimmed.isEmpty()) {
                 throw new IOException("Data source path not provided");
             }
@@ -1137,10 +1181,6 @@ public class IndexItem extends BasicProps {
         } else {
             return f.stringValue();
         }
-    }
-
-    public static void setUseConsoleForMissingDataSources(boolean enabled) {
-        useConsoleForMissingDataSources = enabled;
     }
 
 }

@@ -2,13 +2,12 @@ package iped.engine.webapi.json;
 
 import java.util.Map;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * JSON representation of a graph edge (relationship).
  */
-@ApiModel(value = "GraphEdge")
+@Schema(name = "GraphEdge")
 public class GraphEdgeJSON {
     private long id;
     private String type;
@@ -30,7 +29,7 @@ public class GraphEdgeJSON {
         this.source = source;
     }
 
-    @ApiModelProperty(value = "Edge ID in the graph database")
+    @Schema(description = "Edge ID in the graph database")
     public long getId() {
         return id;
     }
@@ -39,7 +38,7 @@ public class GraphEdgeJSON {
         this.id = id;
     }
 
-    @ApiModelProperty(value = "Relationship type name")
+    @Schema(description = "Relationship type name")
     public String getType() {
         return type;
     }
@@ -48,7 +47,7 @@ public class GraphEdgeJSON {
         this.type = type;
     }
 
-    @ApiModelProperty(value = "ID of the source node")
+    @Schema(description = "ID of the source node")
     public long getSourceNodeId() {
         return sourceNodeId;
     }
@@ -57,7 +56,7 @@ public class GraphEdgeJSON {
         this.sourceNodeId = sourceNodeId;
     }
 
-    @ApiModelProperty(value = "ID of the target node")
+    @Schema(description = "ID of the target node")
     public long getTargetNodeId() {
         return targetNodeId;
     }
@@ -66,7 +65,7 @@ public class GraphEdgeJSON {
         this.targetNodeId = targetNodeId;
     }
 
-    @ApiModelProperty(value = "Edge properties as key-value pairs")
+    @Schema(description = "Edge properties as key-value pairs")
     public Map<String, Object> getProperties() {
         return properties;
     }
@@ -75,7 +74,7 @@ public class GraphEdgeJSON {
         this.properties = properties;
     }
 
-    @ApiModelProperty(value = "Source case identifier")
+    @Schema(description = "Source case identifier")
     public String getSource() {
         return source;
     }

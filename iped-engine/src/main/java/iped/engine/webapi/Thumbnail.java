@@ -23,15 +23,15 @@ import org.apache.lucene.document.Document;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.util.BytesRef;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.engine.data.IPEDSource;
 import iped.engine.task.ThumbTask;
 import iped.engine.util.Util;
 import iped.parsers.util.MetadataUtil;
 import iped.properties.BasicProps;
 
-@Api(value = "Documents")
+@Tag(name = "Documents")
 @Path("sources/{sourceID}/docs/{id}/thumb")
 public class Thumbnail {
 
@@ -43,7 +43,7 @@ public class Thumbnail {
         return t;
     });
 
-    @ApiOperation(value = "Get document's thumbnail")
+    @Operation(summary = "Get document's thumbnail")
     @GET
     @Produces("image/jpg")
     public Response content(@PathParam("sourceID") String sourceID, @PathParam("id") int id) {

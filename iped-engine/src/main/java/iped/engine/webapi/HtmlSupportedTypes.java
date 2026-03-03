@@ -8,21 +8,21 @@ import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 
-@Api(value = "Documents")
+@Tag(name = "Documents")
 @Path("/htmlcontent/supportedtypes")
 public class HtmlSupportedTypes {
 
-    @ApiOperation(value = "Get list of MIME types supported for HTML conversion")
+    @Operation(summary = "Get list of MIME types supported for HTML conversion")
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public static Set<String> getSupportedTypes() {
         return HtmlContent.SUPPORTED_TYPES;
     }
 
-    @ApiOperation(value = "Check if a MIME type is supported for HTML conversion")
+    @Operation(summary = "Check if a MIME type is supported for HTML conversion")
     @GET
     @Path("{mimeType}")
     @Produces(MediaType.APPLICATION_JSON)

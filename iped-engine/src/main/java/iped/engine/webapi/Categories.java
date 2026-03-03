@@ -7,15 +7,15 @@ import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.engine.webapi.json.DataListJSON;
 
-@Api(value = "Categories")
+@Tag(name = "Categories")
 @Path("categories")
 public class Categories {
 
-    @ApiOperation(value = "List categories")
+    @Operation(summary = "List categories")
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public DataListJSON<String> get() throws Exception {

@@ -3,13 +3,12 @@ package iped.engine.webapi.json;
 import java.util.List;
 import java.util.Map;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * JSON representation of a graph node.
  */
-@ApiModel(value = "GraphNode")
+@Schema(name = "GraphNode")
 public class GraphNodeJSON {
     private long id;
     private List<String> labels;
@@ -26,7 +25,7 @@ public class GraphNodeJSON {
         this.source = source;
     }
 
-    @ApiModelProperty(value = "Node ID in the graph database")
+    @Schema(description = "Node ID in the graph database")
     public long getId() {
         return id;
     }
@@ -35,7 +34,7 @@ public class GraphNodeJSON {
         this.id = id;
     }
 
-    @ApiModelProperty(value = "List of labels assigned to this node")
+    @Schema(description = "List of labels assigned to this node")
     public List<String> getLabels() {
         return labels;
     }
@@ -44,7 +43,7 @@ public class GraphNodeJSON {
         this.labels = labels;
     }
 
-    @ApiModelProperty(value = "Node properties as key-value pairs")
+    @Schema(description = "Node properties as key-value pairs")
     public Map<String, Object> getProperties() {
         return properties;
     }
@@ -53,7 +52,7 @@ public class GraphNodeJSON {
         this.properties = properties;
     }
 
-    @ApiModelProperty(value = "Source case identifier")
+    @Schema(description = "Source case identifier")
     public String getSource() {
         return source;
     }

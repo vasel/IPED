@@ -33,7 +33,7 @@ public class NoOpServletConfigFactory implements Supplier<ServletConfig> {
 
         @Override
         public ServletContext getServletContext() {
-            return null;
+            return NoOpServletContextFactory.INSTANCE;
         }
 
         @Override
