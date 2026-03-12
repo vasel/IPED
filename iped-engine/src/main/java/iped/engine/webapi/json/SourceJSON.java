@@ -1,5 +1,7 @@
 package iped.engine.webapi.json;
 
+import java.util.Map;
+
 import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
@@ -11,6 +13,8 @@ public class SourceJSON {
     private int totalItems;
     private double totalSizeMB;
     private String indexDir;
+    private Map<String, Integer> categoryCounts;
+    private Map<String, Integer> bookmarkCounts;
 
     @Schema
     public String getId() {
@@ -55,5 +59,23 @@ public class SourceJSON {
 
     public void setIndexDir(String indexDir) {
         this.indexDir = indexDir;
+    }
+
+    @Schema
+    public Map<String, Integer> getCategoryCounts() {
+        return categoryCounts;
+    }
+
+    public void setCategoryCounts(Map<String, Integer> categoryCounts) {
+        this.categoryCounts = categoryCounts;
+    }
+
+    @Schema
+    public Map<String, Integer> getBookmarkCounts() {
+        return bookmarkCounts;
+    }
+
+    public void setBookmarkCounts(Map<String, Integer> bookmarkCounts) {
+        this.bookmarkCounts = bookmarkCounts;
     }
 }

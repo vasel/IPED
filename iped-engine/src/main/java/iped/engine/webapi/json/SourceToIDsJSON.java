@@ -17,6 +17,7 @@ public class SourceToIDsJSON {
     private int total;
     private int start;
     private int rows;
+    private String nextCursor;
 
     public SourceToIDsJSON() {
         this.sourceToids = new HashMap<String, List<Integer>>();
@@ -82,5 +83,14 @@ public class SourceToIDsJSON {
         for (DocIDGroupJSON grp : data) {
             this.sourceToids.put(grp.getSource(), grp.getIds());
         }
+    }
+
+    @Schema(description = "Opaque cursor for the next page (null if last page)")
+    public String getNextCursor() {
+        return nextCursor;
+    }
+
+    public void setNextCursor(String nextCursor) {
+        this.nextCursor = nextCursor;
     }
 }

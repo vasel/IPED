@@ -13,6 +13,15 @@ public class ImageDeviceInfoJSON {
     private String evidenceUUID;
     private String detectedType; // "mobile", "windows", "other"
 
+    // Mac-specific top-level details (also useful for other desktop types)
+    private String model;
+    private String serialNumber;
+    private String architecture;
+    private String hostName;
+    private String installDate;
+    private List<String> users;
+    private List<ReportRefJSON> connectedDevices;
+
     // ---- Parsed top-level fields (extracted from reports) ----
     private String deviceName;
     private List<String> ipAddresses;
@@ -43,6 +52,69 @@ public class ImageDeviceInfoJSON {
 
     public void setDetectedType(String detectedType) {
         this.detectedType = detectedType;
+    }
+
+    @Schema(description = "Hardware model (e.g., MacBookPro18,3)")
+    public String getModel() {
+        return model;
+    }
+
+    public void setModel(String model) {
+        this.model = model;
+    }
+
+    @Schema(description = "Serial number if found")
+    public String getSerialNumber() {
+        return serialNumber;
+    }
+
+    public void setSerialNumber(String serialNumber) {
+        this.serialNumber = serialNumber;
+    }
+
+    @Schema(description = "CPU architecture, e.g., Intel or Apple Silicon")
+    public String getArchitecture() {
+        return architecture;
+    }
+
+    public void setArchitecture(String architecture) {
+        this.architecture = architecture;
+    }
+
+    @Schema(description = "Host name (LocalHostName/ComputerName)")
+    public String getHostName() {
+        return hostName;
+    }
+
+    public void setHostName(String hostName) {
+        this.hostName = hostName;
+    }
+
+    @Schema(description = "OS installation date (best-effort)")
+    public String getInstallDate() {
+        return installDate;
+    }
+
+    public void setInstallDate(String installDate) {
+        this.installDate = installDate;
+    }
+
+    @Schema(description = "User accounts detected (e.g., /Users/*)")
+    public List<String> getUsers() {
+        return users;
+    }
+
+    public void setUsers(List<String> users) {
+        this.users = users;
+    }
+
+    @Schema(description = "Connected devices references (e.g., sidebar lists, USB history)")
+    public List<ReportRefJSON> getConnectedDevices() {
+        return connectedDevices;
+    }
+
+    public void setConnectedDevices(List<ReportRefJSON> connectedDevices) {
+        this.connectedDevices = connectedDevices;
     }
 
     @Schema(description = "Device/computer name on the network")

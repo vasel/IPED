@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NumericDocValues;
@@ -36,9 +37,13 @@ import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.data.IIPEDSource;
 import iped.engine.config.Configuration;
+import iped.engine.data.Category;
 import iped.engine.data.IPEDMultiSource;
 import iped.engine.data.IPEDSource;
+import iped.engine.search.IPEDSearcher;
+import iped.engine.data.MultiBitmapBookmarks;
 import iped.engine.task.index.IndexItem;
+import iped.engine.webapi.SearchStats;
 import iped.engine.webapi.json.DataListJSON;
 import iped.engine.webapi.json.SourceJSON;
 
@@ -53,14 +58,21 @@ public class Sources {
     public static Map<String, String> sourcePathToStringID;
     private static String sourcesUrl = null;
     private static boolean checkSourcesFlag = false;
+    private static boolean warmupFlag = true;
+    private static boolean precomputeStatsFlag = true;
+    private static SearchStats searchStats;
 
-    public static void init(String urlToAskSources, boolean checkSources) throws IOException, ParseException {
+    public static void init(String urlToAskSources, boolean checkSources, boolean precomputeStats, boolean warmup)
+            throws IOException, ParseException {
         long totalStart = System.currentTimeMillis();
         sourcesUrl = urlToAskSources;
         checkSourcesFlag = checkSources;
+        warmupFlag = warmup;
+        precomputeStatsFlag = precomputeStats;
         sourceIntToString = new HashMap<Integer, String>();
         sourceStringToInt = new HashMap<String, Integer>();
         sourcePathToStringID = new HashMap<String, String>();
+        searchStats = null;
 
         IPEDSource.setUseConsoleForMissingImages(true);
         IndexItem.setUseConsoleForMissingDataSources(true);
@@ -118,6 +130,17 @@ public class Sources {
 
         long totalElapsed = System.currentTimeMillis() - totalStart;
         LOGGER.info("All {} source(s) initialized successfully ({}ms total)", totalSources, totalElapsed);
+
+        if (precomputeStatsFlag) {
+            buildStats();
+        }
+
+        if (warmupFlag) {
+            warmUpSources();
+        }
+
+        // Precompute device info for all sources so the /deviceinfo endpoint is instant
+        DeviceInfo.precomputeAll();
     }
 
     public static IIPEDSource getSource(String sourceID) {
@@ -129,6 +152,10 @@ public class Sources {
             throw new RuntimeException("Source not found: " + sourceID);
         }
         return multiSource.getAtomicSourceBySourceId(id);
+    }
+
+    public static SearchStats getSearchStats() {
+        return searchStats;
     }
 
     @Operation(summary = "List sources")
@@ -181,6 +208,12 @@ public class Sources {
         sourceStringToInt.put(id, last);
         sourceIntToString.put(last, id);
 
+        if (precomputeStatsFlag) {
+            buildStats();
+        } else {
+            searchStats = null;
+        }
+
         return Response.ok().build();
     }
 
@@ -196,6 +229,15 @@ public class Sources {
         result.setTotalItems(source.getTotalItems());
         result.setIndexDir(source.getIndex() != null ? source.getIndex().toString() : "");
         result.setTotalSizeMB(computeTotalSizeMB(source));
+        SearchStats stats = getSearchStats();
+        if (stats != null) {
+            if (stats.getSourceCategoryCounts().containsKey(sourceID)) {
+                result.setCategoryCounts(stats.getSourceCategoryCounts().get(sourceID));
+            }
+            if (stats.getSourceBookmarkCounts().containsKey(sourceID)) {
+                result.setBookmarkCounts(stats.getSourceBookmarkCounts().get(sourceID));
+            }
+        }
         return result;
     }
 
@@ -241,6 +283,90 @@ public class Sources {
         return result;
     }
 
+    private static synchronized void buildStats() {
+        if (multiSource == null) {
+            return;
+        }
+        long start = System.currentTimeMillis();
+        Map<String, Integer> sourceTotals = new HashMap<>();
+        Map<String, Map<String, Integer>> sourceCategoryCounts = new HashMap<>();
+        Map<String, Map<String, Integer>> sourceBookmarkCounts = new HashMap<>();
+        Map<String, Integer> categoryTotals = new HashMap<>();
+        Map<String, Integer> bookmarkTotals = new HashMap<>();
+
+        for (IIPEDSource src : multiSource.getAtomicSources()) {
+            String sid = sourceIntToString.get(src.getSourceId());
+            if (sid == null) continue;
+            sourceTotals.put(sid, src.getTotalItems());
+            sourceCategoryCounts.put(sid, new HashMap<>());
+            sourceBookmarkCounts.put(sid, new HashMap<>());
+
+            Category tree = ((IPEDSource) src).getCategoryTree();
+            if (tree != null) {
+                collectCategoryCounts(tree, sourceCategoryCounts.get(sid), categoryTotals);
+            }
+        }
+
+        if (multiSource.getMultiBookmarks() != null) {
+            Set<String> bookmarkNames = multiSource.getMultiBookmarks().getBookmarkSet();
+            for (String name : bookmarkNames) {
+                int total = multiSource.getMultiBookmarks().getBookmarkCount(name);
+                bookmarkTotals.put(name, total);
+            }
+
+            if (multiSource.getMultiBookmarks() instanceof MultiBitmapBookmarks) {
+                MultiBitmapBookmarks mbm = (MultiBitmapBookmarks) multiSource.getMultiBookmarks();
+                for (String name : bookmarkNames) {
+                    Map<Integer, Integer> perSource = mbm.getBookmarkCountBySource(name);
+                    for (Map.Entry<Integer, Integer> e : perSource.entrySet()) {
+                        String sid = sourceIntToString.get(e.getKey());
+                        if (sid != null) {
+                            sourceBookmarkCounts.computeIfAbsent(sid, k -> new HashMap<>()).put(name, e.getValue());
+                        }
+                    }
+                }
+            }
+        }
+
+        searchStats = new SearchStats(sourceTotals, sourceCategoryCounts, sourceBookmarkCounts, categoryTotals,
+                bookmarkTotals);
+        long elapsed = System.currentTimeMillis() - start;
+        LOGGER.info("Precomputed stats for {} source(s) in {}ms", sourceTotals.size(), elapsed);
+    }
+
+    private static void warmUpSources() {
+        long start = System.currentTimeMillis();
+        int warmed = 0;
+        for (IIPEDSource src : multiSource.getAtomicSources()) {
+            try {
+                IPEDSearcher searcher = new IPEDSearcher((IPEDSource) src, "*");
+                searcher.setNoScoring(true);
+                searcher.count();
+                // also hit one doc to warm docvalues/stored small footprint
+                int[] totalHits = new int[1];
+                searcher.searchPaged(0, 1, totalHits);
+                warmed++;
+            } catch (Exception e) {
+                LOGGER.warn("Warmup failed for source {}: {}", src.getSourceId(), e.getMessage());
+            }
+        }
+        long elapsed = System.currentTimeMillis() - start;
+        LOGGER.info("Warmup executed for {} source(s) in {}ms", warmed, elapsed);
+    }
+
+    private static void collectCategoryCounts(Category category, Map<String, Integer> perSource,
+            Map<String, Integer> aggregate) {
+        if (category == null) return;
+        int num = category.getNumItems();
+        if (num >= 0) {
+            perSource.put(category.getName(), num);
+            aggregate.merge(category.getName(), num, Integer::sum);
+        }
+        for (Category child : category.getChildren()) {
+            collectCategoryCounts(child, perSource, aggregate);
+        }
+    }
+
     @Operation(summary = "Reload sources")
     @POST
     @Path("reload")
@@ -274,6 +400,10 @@ public class Sources {
             multiSource = null;
         }
 
+        // Invalidate caches before reinitializing
+        DeviceInfo.invalidateCache();
+        SearchResultCache.invalidateAll();
+
         // Clear maps before reinitializing
         if (sourceIntToString != null)
             sourceIntToString.clear();
@@ -283,7 +413,7 @@ public class Sources {
             sourcePathToStringID.clear();
 
         // Reinitialize with the original sources URL
-        init(sourcesUrl, checkSourcesFlag);
+        init(sourcesUrl, checkSourcesFlag, precomputeStatsFlag, warmupFlag);
         return Response.ok().build();
     }
 }

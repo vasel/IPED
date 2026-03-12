@@ -33,8 +33,8 @@ public class Main {
      * @throws IOException
      * @throws ParseException
      */
-    public static HttpServer startServer(String host, int port, String urlToAskSources, boolean enableGraph,
-            boolean checkSources) throws Exception {
+            public static HttpServer startServer(String host, int port, String urlToAskSources, boolean enableGraph,
+                boolean checkSources, boolean precomputeStats, boolean warmup) throws Exception {
         System.out.println("Configuring JAX-RS resources...");
         // create a resource config that scans for JAX-RS resources and providers
         // in gpinf.api package
@@ -54,14 +54,15 @@ public class Main {
                 .register(OpenApiResource.class)
                 .register(ConnectionClosedExceptionMapper.class)
                 .register(RequestTrackingFilter.class)
-                .register(new ServletConfigBinder());
+                .register(new ServletConfigBinder())
+                .register(SelectiveGzipInterceptor.class);
 
         // Pass the OpenAPI configuration to the resource
         rc.property("openApi.configuration", oasConfig);
 
         System.out.println("Initializing sources...");
         long initStart = System.currentTimeMillis();
-        Sources.init(urlToAskSources, checkSources);
+        Sources.init(urlToAskSources, checkSources, precomputeStats, warmup);
         long initElapsed = System.currentTimeMillis() - initStart;
         System.out.println("Sources initialized in " + initElapsed + "ms.");
 
@@ -78,7 +79,7 @@ public class Main {
 
         // https://stackoverflow.com/questions/26546373/showing-grizzly-exceptions-in-eclipse-console
         Logger l = Logger.getLogger("org.glassfish.grizzly.http.server.HttpHandler");
-        l.setLevel(Level.FINE);
+        l.setLevel(Level.ALL);
         l.setUseParentHandlers(false);
         ConsoleHandler ch = new ConsoleHandler();
         ch.setLevel(Level.ALL);
@@ -102,6 +103,8 @@ public class Main {
         String urlToAskSources = null;
         boolean enableGraph = false;
         boolean checkSources = false;
+        boolean precomputeStats = true;
+        boolean warmup = Boolean.parseBoolean(System.getProperty("iped.webapi.warmup", "true"));
 
         for (String arg : args) {
             if (arg.startsWith("--host=")) {
@@ -119,6 +122,12 @@ public class Main {
             } else if (arg.equals("--check-sources")) {
                 checkSources = true;
 
+            } else if (arg.startsWith("--precompute-stats=")) {
+                precomputeStats = Boolean.parseBoolean(arg.substring("--precompute-stats=".length()));
+
+            } else if (arg.startsWith("--warmup=")) {
+                warmup = Boolean.parseBoolean(arg.substring("--warmup=".length()));
+
             } else {
                 printHelp();
                 System.exit(-1);
@@ -129,7 +138,7 @@ public class Main {
             printHelp();
             System.exit(-1);
         }
-        httpServer = startServer(host, port, urlToAskSources, enableGraph, checkSources);
+        httpServer = startServer(host, port, urlToAskSources, enableGraph, checkSources, precomputeStats, warmup);
         System.out.println(String.format("Jersey app started with WADL available at \n%sapplication.wadl\n",
                 "http://" + host + ":" + port + "/"));
         
@@ -153,5 +162,7 @@ public class Main {
         System.out.println("--port=\t\tdefault:8080");
         System.out.println("--enable-graph\t\tenable graph API endpoints");
         System.out.println("--check-sources\t\tverify data source files exist on startup");
+        System.out.println("--precompute-stats=\tprecompute counts on startup (default:true)");
+        System.out.println("--warmup=\t\tpreload search caches (default:true; can also set -Diped.webapi.warmup)");
     }
 }

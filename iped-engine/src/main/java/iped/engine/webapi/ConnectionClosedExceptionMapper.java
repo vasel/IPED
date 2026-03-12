@@ -50,7 +50,8 @@ public class ConnectionClosedExceptionMapper implements ExceptionMapper<Mappable
                         message.contains("conexão estabelecida foi anulada") ||
                         message.contains("An established connection was aborted") ||
                         message.contains("Broken pipe") ||
-                        message.contains("Connection reset"))) {
+                        message.contains("Connection reset") ||
+                        (message.contains("Seek to") && message.contains("failed")))) {
                     return true;
                 }
             }

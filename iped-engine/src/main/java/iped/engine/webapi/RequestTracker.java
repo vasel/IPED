@@ -17,7 +17,11 @@ import java.util.stream.Collectors;
 public class RequestTracker {
 
     private static final RequestTracker INSTANCE = new RequestTracker();
-    private static final int MAX_HISTORY = 100;
+        private static final int MAX_HISTORY = Integer.parseInt(
+            System.getProperty("iped.webapi.history.max", "1000"));
+
+    private static final ThreadLocal<Long> CURRENT_REQUEST_ID = new ThreadLocal<>();
+    private final java.util.concurrent.atomic.AtomicLong completedCount = new java.util.concurrent.atomic.AtomicLong(0);
 
     private final Map<Long, RequestInfo> activeRequests = new ConcurrentHashMap<>();
     private final Map<Long, RequestInfo> completedRequests = new ConcurrentHashMap<>();
@@ -25,6 +29,30 @@ public class RequestTracker {
 
     public static RequestTracker getInstance() {
         return INSTANCE;
+    }
+
+    public int getMaxHistory() {
+        return MAX_HISTORY;
+    }
+
+    public long getCompletedCount() {
+        return completedCount.get();
+    }
+
+    public static void setCurrentRequestId(Long id) {
+        if (id == null) {
+            CURRENT_REQUEST_ID.remove();
+        } else {
+            CURRENT_REQUEST_ID.set(id);
+        }
+    }
+
+    public static Long getCurrentRequestId() {
+        return CURRENT_REQUEST_ID.get();
+    }
+
+    public static void clearCurrentRequestId() {
+        CURRENT_REQUEST_ID.remove();
     }
 
     /**
@@ -118,6 +146,7 @@ public class RequestTracker {
 
     private void addToHistory(RequestInfo info) {
         completedRequests.put(info.getId(), info);
+        completedCount.incrementAndGet();
         // Trim history if too large
         if (completedRequests.size() > MAX_HISTORY) {
             completedRequests.keySet().stream()
@@ -144,6 +173,13 @@ public class RequestTracker {
         private volatile String error;
         private volatile boolean cancelled;
 
+        private volatile String clientIp;
+        private volatile String requestBody;
+        private volatile boolean requestBodyTruncated;
+
+        private final java.util.Map<String, Long> phaseDurationsMs = new java.util.LinkedHashMap<>();
+        private volatile long lastMarkNanos;
+
         public RequestInfo(long id, String method, String path, String queryString) {
             this.id = id;
             this.method = method;
@@ -152,6 +188,7 @@ public class RequestTracker {
             this.startTime = Instant.now();
             this.thread = Thread.currentThread();
             this.status = Status.IN_PROGRESS;
+            this.lastMarkNanos = System.nanoTime();
         }
 
         public void setConnection(Closeable connection) {
@@ -178,6 +215,29 @@ public class RequestTracker {
             this.cancelled = true;
         }
 
+        public void setClientIp(String clientIp) {
+            this.clientIp = clientIp;
+        }
+
+        public void setRequestBody(String body, boolean truncated) {
+            this.requestBody = body;
+            this.requestBodyTruncated = truncated;
+        }
+
+        public void markPhase(String name) {
+            if (name == null || name.isEmpty()) {
+                return;
+            }
+            long now = System.nanoTime();
+            long deltaMs = java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(now - lastMarkNanos);
+            phaseDurationsMs.merge(name, deltaMs, Long::sum);
+            lastMarkNanos = now;
+        }
+
+        public java.util.Map<String, Long> getPhaseDurationsMs() {
+            return java.util.Collections.unmodifiableMap(phaseDurationsMs);
+        }
+
         public void markCancelled() {
             this.endTime = Instant.now();
             this.status = Status.CANCELLED;
@@ -194,6 +254,9 @@ public class RequestTracker {
         public int getStatusCode() { return statusCode; }
         public String getError() { return error; }
         public boolean isCancelled() { return cancelled; }
+        public String getClientIp() { return clientIp; }
+        public String getRequestBody() { return requestBody; }
+        public boolean isRequestBodyTruncated() { return requestBodyTruncated; }
 
         public long getDurationMs() {
             Instant end = endTime != null ? endTime : Instant.now();

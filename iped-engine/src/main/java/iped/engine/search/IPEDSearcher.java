@@ -31,6 +31,7 @@ import org.apache.lucene.search.Sort;
 import org.apache.lucene.search.SortField;
 import org.apache.lucene.search.TermQuery;
 import org.apache.lucene.search.TopFieldDocs;
+import org.apache.lucene.search.FieldDoc;
 
 import iped.data.IItemId;
 import iped.engine.data.ItemId;
@@ -146,13 +147,17 @@ public class IPEDSearcher implements IIPEDSearcher {
 
     /**
      * Prepares the query applying the same transformations as searchAll():
-     * MatchAllDocsQuery rewrite, query rewriting, and tree-node filtering.
+     * query rewriting and tree-node filtering.
+     * <p>
+     * MatchAllDocsQuery is kept as-is instead of converting to
+     * IntPoint.newRangeQuery(id, MIN, MAX) because the latter forces a full
+     * BKD-tree traversal across every segment before any docs can be
+     * collected — extremely slow for paginated queries that only need a
+     * handful of results. getNonTreeQuery still filters tree nodes.
      */
     private Query prepareQuery() {
         Query q = this.query;
-        if (q instanceof MatchAllDocsQuery) {
-            q = QueryBuilder.getMatchAllItemsQuery();
-        } else if (rewriteQuery) {
+        if (!(q instanceof MatchAllDocsQuery) && rewriteQuery) {
             q = new QueryBuilder(ipedCase, true).rewriteQuery(q);
         }
         if (!treeQuery) {
@@ -194,11 +199,20 @@ public class IPEDSearcher implements IIPEDSearcher {
      * @return SearchResult containing only the requested page
      */
     public SearchResult searchPaged(int start, int rows, int[] totalHits, Sort sortOverride) throws IOException {
+        return searchPaged(start, rows, totalHits, sortOverride, -1);
+    }
+
+    /**
+     * Paginated search for a single IPEDSource with optional sorting.
+     * When precomputedTotal >= 0, skips the expensive count() call.
+     */
+    public SearchResult searchPaged(int start, int rows, int[] totalHits, Sort sortOverride, int precomputedTotal)
+            throws IOException {
         if (ipedCase instanceof IPEDMultiSource)
             throw new UnsupportedOperationException("Use multiSearchPaged() for IPEDMultiSource!");
 
         Query q = prepareQuery();
-        int total = ipedCase.getSearcher().count(q);
+        int total = precomputedTotal >= 0 ? precomputedTotal : ipedCase.getSearcher().count(q);
         totalHits[0] = total;
 
         if (total == 0 || start >= total || rows <= 0) {
@@ -224,6 +238,115 @@ public class IPEDSearcher implements IIPEDSearcher {
     }
 
     /**
+     * Paginated single-source search using searchAfter for efficient deep paging.
+     * Instead of collecting start+rows docs, it only collects rows docs after the cursor.
+     *
+     * @param rows      maximum number of results to return
+     * @param totalHits single-element array; totalHits[0] is set to the total count
+     * @param after     the last ScoreDoc from the previous page (null for first page)
+     * @param sortOverride optional Sort; if null, uses doc-id order
+     * @return SearchAfterResult with the page items and the last ScoreDoc for the next call
+     */
+    public SearchAfterResult searchAfterPaged(int rows, int[] totalHits, ScoreDoc after, Sort sortOverride)
+            throws IOException {
+        if (ipedCase instanceof IPEDMultiSource)
+            throw new UnsupportedOperationException("Use multiSearchAfterPaged() for IPEDMultiSource!");
+
+        Query q = prepareQuery();
+        int total = ipedCase.getSearcher().count(q);
+        totalHits[0] = total;
+
+        if (total == 0 || rows <= 0) {
+            return new SearchAfterResult(new int[0], new float[0], null);
+        }
+
+        Sort sort = sortOverride != null ? sortOverride : new Sort(SortField.FIELD_DOC);
+        TopFieldDocs topDocs = (after != null)
+                ? ipedCase.getSearcher().searchAfter(after, q, rows, sort, true)
+                : ipedCase.getSearcher().search(q, rows, sort, true);
+        ScoreDoc[] scoreDocs = topDocs.scoreDocs;
+
+        int[] ids = new int[scoreDocs.length];
+        float[] scores = new float[scoreDocs.length];
+        for (int i = 0; i < scoreDocs.length; i++) {
+            ids[i] = ipedCase.getId(scoreDocs[i].doc);
+            scores[i] = scoreDocs[i].score;
+        }
+
+        ScoreDoc lastDoc = scoreDocs.length > 0 ? scoreDocs[scoreDocs.length - 1] : null;
+        return new SearchAfterResult(ids, scores, lastDoc);
+    }
+
+    /**
+     * Paginated multi-source search using searchAfter for efficient deep paging.
+     *
+     * @param rows      maximum number of results to return
+     * @param totalHits single-element array; totalHits[0] is set to the total count
+     * @param after     the last ScoreDoc from the previous page (null for first page)
+     * @param sortOverride optional Sort; if null, uses doc-id order
+     * @return SearchAfterMultiResult with the page items and the last ScoreDoc
+     */
+    public SearchAfterMultiResult multiSearchAfterPaged(int rows, int[] totalHits, ScoreDoc after,
+            Sort sortOverride) throws IOException {
+        if (!(ipedCase instanceof IPEDMultiSource))
+            throw new UnsupportedOperationException("Use searchAfterPaged() for single IPEDSource!");
+
+        IPEDMultiSource multiSource = (IPEDMultiSource) ipedCase;
+        Query q = prepareQuery();
+        int total = multiSource.getSearcher().count(q);
+        totalHits[0] = total;
+
+        if (total == 0 || rows <= 0) {
+            return new SearchAfterMultiResult(new IItemId[0], null);
+        }
+
+        Sort sort = sortOverride != null ? sortOverride : new Sort(SortField.FIELD_DOC);
+        TopFieldDocs topDocs = (after != null)
+                ? multiSource.getSearcher().searchAfter(after, q, rows, sort, true)
+                : multiSource.getSearcher().search(q, rows, sort, true);
+        ScoreDoc[] scoreDocs = topDocs.scoreDocs;
+
+        IItemId[] result = new IItemId[scoreDocs.length];
+        for (int i = 0; i < scoreDocs.length; i++) {
+            result[i] = multiSource.getItemId(scoreDocs[i].doc);
+        }
+
+        ScoreDoc lastDoc = scoreDocs.length > 0 ? scoreDocs[scoreDocs.length - 1] : null;
+        return new SearchAfterMultiResult(result, lastDoc);
+    }
+
+    /** Result of searchAfter on a single source. */
+    public static class SearchAfterResult {
+        private final int[] ids;
+        private final float[] scores;
+        private final ScoreDoc lastScoreDoc;
+
+        public SearchAfterResult(int[] ids, float[] scores, ScoreDoc lastScoreDoc) {
+            this.ids = ids;
+            this.scores = scores;
+            this.lastScoreDoc = lastScoreDoc;
+        }
+
+        public int[] getIds() { return ids; }
+        public float[] getScores() { return scores; }
+        public ScoreDoc getLastScoreDoc() { return lastScoreDoc; }
+    }
+
+    /** Result of searchAfter on a multi-source. */
+    public static class SearchAfterMultiResult {
+        private final IItemId[] items;
+        private final ScoreDoc lastScoreDoc;
+
+        public SearchAfterMultiResult(IItemId[] items, ScoreDoc lastScoreDoc) {
+            this.items = items;
+            this.lastScoreDoc = lastScoreDoc;
+        }
+
+        public IItemId[] getItems() { return items; }
+        public ScoreDoc getLastScoreDoc() { return lastScoreDoc; }
+    }
+
+    /**
      * Paginated search for an IPEDMultiSource. Returns only the requested page
      * of IItemId results plus the total hit count.
      *
@@ -246,12 +369,28 @@ public class IPEDSearcher implements IIPEDSearcher {
      * @return array of IItemId containing only the requested page
      */
     public IItemId[] multiSearchPaged(int start, int rows, int[] totalHits, Sort sortOverride) throws IOException {
+        return multiSearchPaged(start, rows, totalHits, sortOverride, -1);
+    }
+
+    /**
+     * Paginated search for an IPEDMultiSource with optional sorting.
+     * When precomputedTotal >= 0, skips the expensive count() call.
+     *
+     * @param start zero-based offset of the first result to return
+     * @param rows  maximum number of results to return
+     * @param totalHits single-element array; totalHits[0] is set to the total count
+     * @param sortOverride optional Sort to apply; if null, uses doc-id order
+     * @param precomputedTotal if >= 0, used instead of running count()
+     * @return array of IItemId containing only the requested page
+     */
+    public IItemId[] multiSearchPaged(int start, int rows, int[] totalHits, Sort sortOverride, int precomputedTotal)
+            throws IOException {
         if (!(ipedCase instanceof IPEDMultiSource))
             throw new UnsupportedOperationException("Use searchPaged() for single IPEDSource!");
 
         IPEDMultiSource multiSource = (IPEDMultiSource) ipedCase;
         Query q = prepareQuery();
-        int total = multiSource.getSearcher().count(q);
+        int total = precomputedTotal >= 0 ? precomputedTotal : multiSource.getSearcher().count(q);
         totalHits[0] = total;
 
         if (total == 0 || start >= total || rows <= 0) {
@@ -279,10 +418,12 @@ public class IPEDSearcher implements IIPEDSearcher {
         // System.out.println("searching");
 
         Query query = this.query;
-        if (query instanceof MatchAllDocsQuery) {
-            query = QueryBuilder.getMatchAllItemsQuery();
-        } else if (rewriteQuery) {
-            query = new QueryBuilder(ipedCase, true).rewriteQuery(query);
+        // Keep MatchAllDocsQuery as-is: it has O(1) setup, whereas
+        // IntPointRangeQuery(id, MIN, MAX) scans the entire BKD tree.
+        if (!(query instanceof MatchAllDocsQuery)) {
+            if (rewriteQuery) {
+                query = new QueryBuilder(ipedCase, true).rewriteQuery(query);
+            }
         }
         if (!treeQuery) {
             query = getNonTreeQuery(query);

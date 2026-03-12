@@ -245,6 +245,10 @@ public class RequestMonitorConsole implements Runnable {
                 }
                 break;
 
+            case "process":
+                handleProcessCommand(originalLine);
+                break;
+
             case "quit":
             case "exit":
             case "q":
@@ -275,6 +279,10 @@ public class RequestMonitorConsole implements Runnable {
         System.out.println("  stats [n] [p95|total] [METHOD] [PATH] - Show request stats");
         System.out.println("  sources, src       - List sources, index dirs, sleuth DB and image paths");
         System.out.println("  reimage <src> <imgId> <path> - Change an image path for a source");
+        System.out.println("  process thumbnails [--force] <ext...> - Generate thumbnails in background");
+        System.out.println("  process status     - Show background process status");
+        System.out.println("  process watch      - Watch background process progress");
+        System.out.println("  process cancel     - Cancel running background process");
         System.out.println("  shutdown, stop     - Stop the web server");
         System.out.println("  clear, cls         - Clear screen");
         System.out.println("  help, h, ?         - Show this help");
@@ -333,8 +341,10 @@ public class RequestMonitorConsole implements Runnable {
         long p99 = percentile(durations, 99);
         long max = durations.get(durations.size() - 1);
 
+        RequestTracker tracker = RequestTracker.getInstance();
         System.out.println("\n=== Request Stats ===");
-        System.out.println("History size:  " + filteredHistory.size() + " (max 100)");
+        System.out.println("History size:  " + filteredHistory.size()
+            + " (stored max " + tracker.getMaxHistory() + ", total " + tracker.getCompletedCount() + ")");
         System.out.println("Active:        " + active.size());
         System.out.println("Completed:     " + ok + " ok, " + failed + " failed, " + cancelled + " cancelled");
         System.out.println("Durations:     avg " + formatDuration(avg)
@@ -513,14 +523,19 @@ public class RequestMonitorConsole implements Runnable {
             return;
         }
 
-        int count = Math.min(limit, history.size());
-        System.out.println("\n=== Recent Requests (last " + count + ") ===");
+        // Sort by duration descending (slowest first)
+        List<RequestTracker.RequestInfo> sorted = new ArrayList<>(history);
+        sorted.sort((a, b) -> Long.compare(b.getDurationMs(), a.getDurationMs()));
+
+        int count = Math.min(limit, sorted.size());
+        long total = RequestTracker.getInstance().getCompletedCount();
+        System.out.println("\n=== Recent Requests (top " + count + " slowest of " + total + ") ===");
         System.out.println(String.format("%-6s %-8s %-10s %-10s %-6s %s",
                 "ID", "METHOD", "STATUS", "DURATION", "HTTP", "PATH"));
         System.out.println("-".repeat(120));
 
         for (int i = 0; i < count; i++) {
-            RequestTracker.RequestInfo req = history.get(i);
+            RequestTracker.RequestInfo req = sorted.get(i);
             String duration = formatDuration(req.getDurationMs());
             String status = req.getStatus().toString();
             String httpCode = req.getStatusCode() > 0 ? String.valueOf(req.getStatusCode()) : "-";
@@ -547,7 +562,8 @@ public class RequestMonitorConsole implements Runnable {
         System.out.println("Active requests:     " + active.size());
         System.out.println("Slow requests (>30s):" + slowRequests);
         System.out.println("Recent failures:     " + failedRecent + " (of last 50)");
-        System.out.println("Total in history:    " + history.size());
+        System.out.println("Total in history:    " + RequestTracker.getInstance().getCompletedCount()
+            + " (stored " + history.size() + ")");
 
         if (slowRequests > 0) {
             System.out.println(
@@ -567,11 +583,25 @@ public class RequestMonitorConsole implements Runnable {
         System.out.println("Method:     " + req.getMethod());
         System.out.println("Path:       " + req.getPath());
         System.out.println("Query:      " + (req.getQueryString() != null ? req.getQueryString() : "(none)"));
+        if (req.getClientIp() != null) {
+            System.out.println("Client IP:  " + req.getClientIp());
+        }
         System.out.println("Status:     " + req.getStatus());
         System.out.println("HTTP Code:  " + (req.getStatusCode() > 0 ? req.getStatusCode() : "-"));
         System.out.println(
                 "Started:    " + TIME_FORMAT.format(req.getStartTime().atZone(java.time.ZoneId.systemDefault())));
         System.out.println("Duration:   " + formatDuration(req.getDurationMs()));
+
+        if (req.getRequestBody() != null) {
+            System.out.println("Body (captured):");
+            String body = req.getRequestBody();
+            for (String line : body.split("\r?\n")) {
+                System.out.println("  " + line);
+            }
+            if (req.isRequestBodyTruncated()) {
+                System.out.println("  ... (truncated) ...");
+            }
+        }
 
         if (req.getThread() != null) {
             Thread t = req.getThread();
@@ -588,6 +618,19 @@ public class RequestMonitorConsole implements Runnable {
 
         if (req.isCancelled()) {
             System.out.println("[CANCELLED]");
+        }
+
+        java.util.Map<String, Long> phases = req.getPhaseDurationsMs();
+        if (!phases.isEmpty()) {
+            System.out.println("\nPhase timings (sorted by duration):");
+            long total = Math.max(1, req.getDurationMs());
+            phases.entrySet().stream()
+                    .sorted((a, b) -> Long.compare(b.getValue(), a.getValue()))
+                    .forEach(entry -> {
+                        long ms = entry.getValue();
+                        long pct = Math.round((ms * 100.0) / total);
+                        System.out.println(String.format("  %-20s %7d ms  (%2d%%)", entry.getKey(), ms, pct));
+                    });
         }
     }
 
@@ -720,6 +763,9 @@ public class RequestMonitorConsole implements Runnable {
         List<IPEDSource> sources = Sources.multiSource.getAtomicSources();
         System.out.println("\n=== Sources (" + sources.size() + ") ===");
 
+        // Proactively validate data source paths and prompt in-console when missing.
+        runDataSourcePrecheck(sources);
+
         for (IPEDSource source : sources) {
             int srcId = source.getSourceId();
             String externalId = Sources.sourceIntToString != null
@@ -832,6 +878,34 @@ public class RequestMonitorConsole implements Runnable {
         }
     }
 
+    private void runDataSourcePrecheck(List<IPEDSource> sources) {
+        if (sources.isEmpty()) {
+            return;
+        }
+
+        // Ensure console prompts are enabled for missing paths.
+        IndexItem.setUseConsoleForMissingDataSources(true);
+
+        System.out.println("\nChecking data sources (will ask for new paths if missing)...");
+        long totalStart = System.currentTimeMillis();
+        for (IPEDSource source : sources) {
+            String externalId = Sources.sourceIntToString != null
+                    ? Sources.sourceIntToString.getOrDefault(source.getSourceId(), "?")
+                    : "?";
+            long start = System.currentTimeMillis();
+            try {
+                source.precheckDataSources();
+                long elapsed = System.currentTimeMillis() - start;
+                System.out.println("  [" + externalId + "] data sources OK (" + formatDuration(elapsed) + ")");
+            } catch (Exception e) {
+                long elapsed = System.currentTimeMillis() - start;
+                System.out.println("  [" + externalId + "] ERROR after " + formatDuration(elapsed) + ": " + e.getMessage());
+            }
+        }
+        long totalElapsed = System.currentTimeMillis() - totalStart;
+        System.out.println("Finished data source check in " + formatDuration(totalElapsed));
+    }
+
     private void reimageImagePath(String sourceExternalId, long imgId, String newPath, BufferedReader reader) {
         try {
             // Find the source by external ID
@@ -905,6 +979,150 @@ public class RequestMonitorConsole implements Runnable {
         }
     }
 
+    private void handleProcessCommand(String originalLine) {
+        String[] tokens = originalLine.trim().split("\\s+");
+        if (tokens.length < 2) {
+            printProcessHelp();
+            return;
+        }
+
+        String subCmd = tokens[1].toLowerCase();
+        switch (subCmd) {
+            case "status":
+                printBackgroundProcessStatus();
+                break;
+
+            case "watch":
+                watchBackgroundProcess();
+                break;
+
+            case "cancel":
+                if (ThumbnailProcessor.isBusy()) {
+                    ThumbnailProcessor.cancelRunning();
+                    System.out.println(YELLOW + "Cancel signal sent." + RESET);
+                } else {
+                    System.out.println("No background process is running.");
+                }
+                break;
+
+            case "thumbnails":
+            case "thumbs":
+                startThumbnailProcess(tokens);
+                break;
+
+            default:
+                System.out.println("Unknown process subcommand: " + subCmd);
+                printProcessHelp();
+        }
+    }
+
+    private void startThumbnailProcess(String[] tokens) {
+        if (ThumbnailProcessor.isBusy()) {
+            System.out.println(RED + "A background process is already running. Use 'process cancel' first." + RESET);
+            return;
+        }
+
+        boolean force = false;
+        java.util.Set<String> extensions = new java.util.LinkedHashSet<String>();
+        java.util.Set<String> supported = ThumbnailProcessor.getSupportedExtensions();
+
+        for (int i = 2; i < tokens.length; i++) {
+            String tok = tokens[i].toLowerCase();
+            if ("--force".equals(tok) || "-force".equals(tok)) {
+                force = true;
+            } else if ("--help".equals(tok) || "-h".equals(tok) || "help".equals(tok)) {
+                ThumbnailProcessor.printHelp();
+                return;
+            } else if (supported.contains(tok)) {
+                extensions.add(tok);
+            } else {
+                System.out.println(YELLOW + "Unsupported extension ignored: " + tok + RESET);
+            }
+        }
+
+        if (extensions.isEmpty()) {
+            ThumbnailProcessor.printHelp();
+            return;
+        }
+
+        ThumbnailProcessor processor = new ThumbnailProcessor(extensions, force);
+        Thread thread = new Thread(processor, "ThumbnailProcessor");
+        thread.setDaemon(true);
+        thread.start();
+
+        System.out.println("Thumbnail generation started in background.");
+        System.out.println("Use 'process status' or 'process watch' to follow progress.");
+    }
+
+    private void printBackgroundProcessStatus() {
+        ThumbnailProcessor.StatusSnapshot snapshot = ThumbnailProcessor.getStatusSnapshot();
+        if (snapshot == null) {
+            System.out.println("No background process status available.");
+            return;
+        }
+
+        System.out.println("\n=== Background Process Status ===");
+        System.out.println(snapshot.summaryLine());
+    }
+
+    private void watchBackgroundProcess() {
+        System.out.println("Watching background process (press Enter to stop watching)...");
+        try {
+            while (true) {
+                ThumbnailProcessor.StatusSnapshot snapshot = ThumbnailProcessor.getStatusSnapshot();
+                System.out.print(CLEAR_SCREEN);
+                System.out.flush();
+
+                System.out.println(BOLD + "=== Background Process Watch ===" + RESET);
+                if (snapshot == null) {
+                    System.out.println("No background process status available.");
+                    break;
+                }
+
+                System.out.println("State:      " + snapshot.getMessage());
+                System.out.println("Running:    " + snapshot.isRunning());
+                System.out.println("Source:     " + (snapshot.getCurrentSource() != null ? snapshot.getCurrentSource() : "-"));
+                System.out.println("Item:       " + (snapshot.getCurrentItem() != null ? snapshot.getCurrentItem() : "-"));
+                System.out.println("Extensions: " + snapshot.getExtensions());
+                System.out.println("Force:      " + snapshot.isForce());
+                System.out.println("Matched:    " + snapshot.getMatched());
+                System.out.println("Generated:  " + snapshot.getGenerated());
+                System.out.println("Skipped:    " + snapshot.getSkipped());
+                System.out.println("Errors:     " + snapshot.getErrors());
+                System.out.println("Elapsed:    " + formatDuration(snapshot.getElapsedMs()));
+                System.out.println(DIM + "Updated:    " + java.time.Instant.ofEpochMilli(snapshot.getUpdatedAt()) + RESET);
+                System.out.println();
+                System.out.println(DIM + "Press Enter to exit watch mode." + RESET);
+
+                if (!snapshot.isRunning()) {
+                    break;
+                }
+
+                Thread.sleep(1000);
+                if (System.in.available() > 0) {
+                    while (System.in.available() > 0) {
+                        System.in.read();
+                    }
+                    break;
+                }
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        } catch (Exception e) {
+            System.out.println("Watch error: " + e.getMessage());
+        } finally {
+            System.out.println("\nExited background watch.");
+        }
+    }
+
+    private void printProcessHelp() {
+        System.out.println("Usage: process <subcommand> [args...]");
+        System.out.println("  process thumbnails [--force|-force] <ext...>");
+        System.out.println("  process status");
+        System.out.println("  process watch");
+        System.out.println("  process cancel");
+    }
+
     private void watchLoop(int historyLimit) {
         System.out.println("Entering live monitor (press Enter to exit)...");
         watchMode = true;
@@ -948,7 +1166,8 @@ public class RequestMonitorConsole implements Runnable {
 
                 // Recent history
                 int count = Math.min(historyLimit, history.size());
-                System.out.println(BOLD + "--- Recent Requests (last " + count + ") ---" + RESET);
+                long total = RequestTracker.getInstance().getCompletedCount();
+                System.out.println(BOLD + "--- Recent Requests (last " + count + " of " + total + ") ---" + RESET);
                 if (history.isEmpty()) {
                     System.out.println(DIM + "  (none)" + RESET);
                 } else {
@@ -996,7 +1215,7 @@ public class RequestMonitorConsole implements Runnable {
                 if (failedRecent > 0) {
                     System.out.print("  " + RED + "Errors(50): " + failedRecent + RESET);
                 }
-                System.out.print("  " + DIM + "History: " + history.size() + RESET);
+                System.out.print("  " + DIM + "History: " + RequestTracker.getInstance().getCompletedCount() + RESET);
                 System.out.println();
 
                 // Check if user pressed Enter to exit

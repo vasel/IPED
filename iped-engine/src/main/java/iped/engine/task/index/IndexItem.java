@@ -74,6 +74,8 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.utils.DateUtils;
 import org.sleuthkit.datamodel.SleuthkitCase;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import iped.data.IItem;
 import iped.datasource.IDataSource;
@@ -107,6 +109,8 @@ import iped.utils.UTF8Properties;
  * itens que será adicionado ao índice.
  */
 public class IndexItem extends BasicProps {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(IndexItem.class);
 
     public static final String GEO_SSDV_PREFIX = "geo_ssdv_";
 
@@ -1067,15 +1071,21 @@ public class IndexItem extends BasicProps {
             throws IOException {
         Path path = Paths.get(sisf.getDataSourceURI());
         if (path != null && !Files.exists(path)) {
+            long start = System.currentTimeMillis();
+            LOGGER.warn("Data source missing: {} (decoder={})", path, sisf.getClass().getSimpleName());
             Path newPath = loadDataSourcePath(caseModuleDir, path);
             if (newPath != null && Files.exists(newPath)) {
                 sisf.setDataSourceURI(newPath.toUri());
+                LOGGER.info("Data source remapped using saved location: {} -> {} ({} ms)", path, newPath,
+                        System.currentTimeMillis() - start);
                 return;
             }
             if (useConsoleForMissingDataSources) {
                 Path newConsolePath = askDataSourcePathInConsole(path);
                 sisf.setDataSourceURI(newConsolePath.toUri());
                 saveDataSourcePath(caseModuleDir, path, newConsolePath);
+                LOGGER.info("Data source remapped via console input: {} -> {} ({} ms)", path, newConsolePath,
+                        System.currentTimeMillis() - start);
                 return;
             }
             SelectImagePathWithDialog siwd = new SelectImagePathWithDialog(path.toFile(), true);
@@ -1083,6 +1093,8 @@ public class IndexItem extends BasicProps {
             if (newDataSource != null) {
                 sisf.setDataSourceURI(newDataSource.toPath().toUri());
                 saveDataSourcePath(caseModuleDir, path, newDataSource.toPath());
+                LOGGER.info("Data source remapped via GUI selection: {} -> {} ({} ms)", path,
+                        newDataSource.toPath(), System.currentTimeMillis() - start);
             }
         }
     }
@@ -1094,6 +1106,9 @@ public class IndexItem extends BasicProps {
         BufferedReader fallbackReader = sharedReader == null
                 ? new BufferedReader(new InputStreamReader(System.in))
                 : null;
+        LOGGER.info("Prompting for missing data source path: {}", missingPath);
+        int attempts = 0;
+        long start = System.currentTimeMillis();
         while (true) {
             System.out.println("Missing data source: " + missingPath.toString());
             String prompt = "Enter new path: ";
@@ -1120,9 +1135,13 @@ public class IndexItem extends BasicProps {
             }
             Path candidate = Paths.get(trimmed);
             if (Files.exists(candidate)) {
+                LOGGER.info("Data source path provided after {} attempt(s): {} ({} ms)", attempts + 1, candidate,
+                        System.currentTimeMillis() - start);
                 return candidate;
             }
+            LOGGER.warn("Path not found while remapping data source (attempt {}): {}", attempts + 1, trimmed);
             System.out.println("Path not found: " + trimmed);
+            attempts++;
         }
     }
 

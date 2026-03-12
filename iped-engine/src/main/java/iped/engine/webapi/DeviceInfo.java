@@ -8,9 +8,20 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import com.dd.plist.NSDictionary;
+import com.dd.plist.NSObject;
+import com.dd.plist.NSString;
+import com.dd.plist.PropertyListParser;
 
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
@@ -46,8 +57,12 @@ public class DeviceInfo {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(DeviceInfo.class);
 
+    /** Pre-computed cache: sourceID -> DeviceInfoJSON. Populated at startup or on first access. */
+    private static final Map<String, DeviceInfoJSON> CACHE = new ConcurrentHashMap<>();
+
     private static final String TYPE_MOBILE = "mobile";
     private static final String TYPE_WINDOWS = "windows";
+    private static final String TYPE_MAC = "mac";
     private static final String TYPE_OTHER = "other";
 
     // MIME types for detection
@@ -90,10 +105,69 @@ public class DeviceInfo {
     private static final String UFED_LAST_USED_DATE = ExtraProperties.UFED_META_PREFIX + "LastUsedDate";
     private static final String UFED_STATUS = ExtraProperties.UFED_META_PREFIX + "Status";
 
+    /** Maximum time (seconds) allowed per source during precomputation. */
+    private static final long PRECOMPUTE_TIMEOUT_SECS = 180;
+
+    /**
+     * Pre-compute device info for all sources. Call from Sources.init() at startup.
+     * Each source is processed sequentially with a per-source timeout; total time is logged.
+     */
+    public static void precomputeAll() {
+        if (Sources.multiSource == null || Sources.sourceIntToString == null) return;
+        long start = System.currentTimeMillis();
+        int count = 0;
+        for (Map.Entry<Integer, String> entry : Sources.sourceIntToString.entrySet()) {
+            String sourceID = entry.getValue();
+            try {
+                LOGGER.info("Precomputing deviceinfo for source '{}'...", sourceID);
+                long srcStart = System.currentTimeMillis();
+                DeviceInfoJSON info = CompletableFuture
+                        .supplyAsync(() -> {
+                            try {
+                                return computeDeviceInfo(sourceID);
+                            } catch (Exception e) {
+                                throw new RuntimeException(e);
+                            }
+                        })
+                        .get(PRECOMPUTE_TIMEOUT_SECS, TimeUnit.SECONDS);
+                CACHE.put(sourceID, info);
+                long srcElapsed = System.currentTimeMillis() - srcStart;
+                LOGGER.info("Deviceinfo for '{}' precomputed in {}ms", sourceID, srcElapsed);
+                count++;
+            } catch (TimeoutException te) {
+                LOGGER.warn("Precompute deviceinfo for '{}' timed out after {}s – will compute on demand",
+                        sourceID, PRECOMPUTE_TIMEOUT_SECS);
+            } catch (Exception e) {
+                LOGGER.warn("Failed to precompute deviceinfo for '{}': {}", sourceID,
+                        e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+            }
+        }
+        long elapsed = System.currentTimeMillis() - start;
+        LOGGER.info("Precomputed deviceinfo for {} source(s) in {}ms", count, elapsed);
+    }
+
+    /**
+     * Invalidate the entire device-info cache (e.g. on source reload).
+     */
+    public static void invalidateCache() {
+        CACHE.clear();
+    }
+
     @Operation(summary = "Get device/system information for each forensic image in this source")
     @GET
     @Produces(MediaType.APPLICATION_JSON)
     public DeviceInfoJSON getDeviceInfo(@PathParam("sourceID") String sourceID) throws Exception {
+        // Return from cache if available; otherwise compute on the fly and cache
+        DeviceInfoJSON cached = CACHE.get(sourceID);
+        if (cached != null) {
+            return cached;
+        }
+        DeviceInfoJSON result = computeDeviceInfo(sourceID);
+        CACHE.put(sourceID, result);
+        return result;
+    }
+
+    private static DeviceInfoJSON computeDeviceInfo(String sourceID) throws Exception {
         IIPEDSource source = Sources.getSource(sourceID);
         IPEDSource ipedSource = (IPEDSource) source;
 
@@ -103,8 +177,9 @@ public class DeviceInfo {
         Set<String> evidenceUUIDs = ipedSource.getEvidenceUUIDs();
         List<ImageDeviceInfoJSON> images = new ArrayList<>();
 
+        DeviceInfo builder = new DeviceInfo();
         for (String uuid : evidenceUUIDs) {
-            ImageDeviceInfoJSON imageInfo = buildImageDeviceInfo(ipedSource, sourceID, uuid);
+            ImageDeviceInfoJSON imageInfo = builder.buildImageDeviceInfo(ipedSource, sourceID, uuid);
             images.add(imageInfo);
         }
 
@@ -128,6 +203,9 @@ public class DeviceInfo {
             case TYPE_WINDOWS:
                 imageInfo.setDesktopInfo(collectDesktopInfo(source, sourceID, uuid));
                 break;
+            case TYPE_MAC:
+                collectMacInfo(imageInfo, source, sourceID, uuid);
+                break;
             default:
                 imageInfo.setOtherInfo(collectOtherInfo(source, sourceID, uuid));
                 break;
@@ -145,7 +223,18 @@ public class DeviceInfo {
         // Extract parsed top-level fields (device name, IP, OS) from already-collected data
         extractCommonFields(imageInfo, source, uuid);
 
+        if (TYPE_MAC.equals(detectedType)) {
+            extractMacFields(imageInfo, source, uuid);
+        }
+
         return imageInfo;
+    }
+
+    /**
+     * Extract macOS common fields after mac collection (host/device/OS).
+     */
+    private void extractMacFields(ImageDeviceInfoJSON imageInfo, IPEDSource source, String uuid) {
+        // If we already have fields from mac collection, nothing else to do here for now.
     }
 
     /**
@@ -161,9 +250,16 @@ public class DeviceInfo {
 
         // Check for Windows registry reports → windows
         String windowsQuery = BasicProps.CONTENTTYPE + ":\"" + REGISTRY_REPORT_MIME + "\" AND "
-                + BasicProps.EVIDENCE_UUID + ":\"" + uuid + "\"";
+            + BasicProps.EVIDENCE_UUID + ":\"" + uuid + "\"";
         if (countResults(source, windowsQuery) > 0) {
             return TYPE_WINDOWS;
+        }
+
+        // Check for macOS SystemVersion.plist → mac
+        String macQuery = BasicProps.NAME + ":\"SystemVersion.plist\" AND "
+            + BasicProps.EVIDENCE_UUID + ":\"" + uuid + "\"";
+        if (countResults(source, macQuery) > 0) {
+            return TYPE_MAC;
         }
 
         return TYPE_OTHER;
@@ -498,17 +594,51 @@ public class DeviceInfo {
         }
     }
 
+    /** Maximum content size we'll read for parsing (1 MB). Prevents blocking on huge files. */
+    private static final int MAX_CONTENT_READ = 1024 * 1024;
+
     /**
-     * Read the full content of an item as a String.
+     * Read the content of an item as a String, capped at {@link #MAX_CONTENT_READ} bytes.
      */
     private String readItemContent(IItem item) {
         try (InputStream is = item.getBufferedInputStream()) {
             if (is == null) return null;
-            return readInputStream(is);
+            return readInputStream(is, MAX_CONTENT_READ);
         } catch (IOException e) {
             LOGGER.warn("Failed to read content of item {}: {}", item.getName(), e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Parse a plist file (binary or XML) into an NSDictionary using the dd-plist library.
+     * Returns null if the item cannot be parsed or is not a dictionary.
+     */
+    private NSDictionary parsePlistDict(IItem item) {
+        try (InputStream is = item.getBufferedInputStream()) {
+            if (is == null) return null;
+            NSObject obj = PropertyListParser.parse(is);
+            if (obj instanceof NSDictionary) {
+                return (NSDictionary) obj;
+            }
+            LOGGER.debug("Plist {} is not a dictionary (type={})", item.getName(),
+                    obj != null ? obj.getClass().getSimpleName() : "null");
+        } catch (Exception e) {
+            LOGGER.warn("Failed to parse plist {}: {}", item.getName(), e.getMessage());
+        }
+        return null;
+    }
+
+    /**
+     * Get a string value from an NSDictionary. Returns null if key is absent.
+     */
+    private String dictStringValue(NSDictionary dict, String key) {
+        if (dict == null || key == null) return null;
+        NSObject obj = dict.get(key);
+        if (obj == null) return null;
+        if (obj instanceof NSString) return ((NSString) obj).getContent();
+        // For numbers/booleans, use toString()
+        return obj.toString();
     }
 
     /**
@@ -544,6 +674,266 @@ public class DeviceInfo {
         String query = BasicProps.CATEGORY + ":\"" + CAT_DEVICE_INFORMATION + "\" AND "
                 + BasicProps.EVIDENCE_UUID + ":\"" + uuid + "\"";
         return searchAndMapToReportRefs(source, sourceID, query);
+    }
+
+    /**
+     * Collect macOS device information from common plist files.
+     * Uses dd-plist library to parse both binary and XML plists, with regex fallback.
+     */
+    private void collectMacInfo(ImageDeviceInfoJSON imageInfo, IPEDSource source, String sourceID, String uuid)
+            throws Exception {
+        // SystemVersion.plist for OS version/name/build and install date (best-effort)
+        IItem systemVersionItem = findFirstByName(source, uuid, "SystemVersion.plist");
+        if (systemVersionItem != null) {
+            // Try binary/XML plist parsing first, fall back to regex on raw text
+            NSDictionary svDict = parsePlistDict(systemVersionItem);
+            String productName = null, productVersion = null, buildVersion = null;
+            if (svDict != null) {
+                productName = dictStringValue(svDict, "ProductName");
+                productVersion = dictStringValue(svDict, "ProductVersion");
+                buildVersion = dictStringValue(svDict, "ProductBuildVersion");
+                LOGGER.debug("SystemVersion.plist parsed via dd-plist: name={}, version={}, build={}",
+                        productName, productVersion, buildVersion);
+            } else {
+                // Fallback: try reading as text (works for XML plists)
+                String plist = readItemContent(systemVersionItem);
+                if (plist != null) {
+                    productName = plistValue(plist, "ProductName");
+                    productVersion = plistValue(plist, "ProductVersion");
+                    buildVersion = plistValue(plist, "ProductBuildVersion");
+                    LOGGER.debug("SystemVersion.plist parsed via regex fallback: name={}, version={}, build={}",
+                            productName, productVersion, buildVersion);
+                }
+            }
+
+            imageInfo.setOsName(firstNonNull(imageInfo.getOsName(), productName));
+            String combinedVersion = productVersion;
+            if (productVersion != null && buildVersion != null) {
+                combinedVersion = productVersion + " (" + buildVersion + ")";
+            } else if (buildVersion != null) {
+                combinedVersion = buildVersion;
+            }
+            imageInfo.setOsVersion(firstNonNull(imageInfo.getOsVersion(), combinedVersion));
+
+            // Use file created date as install date hint
+            int luceneId = source.getLuceneId(systemVersionItem.getId());
+            Document doc = source.getReader().document(luceneId);
+            String created = getDocField(doc, BasicProps.CREATED);
+            imageInfo.setInstallDate(firstNonNull(imageInfo.getInstallDate(), created));
+
+            // Add reference
+            imageInfo.setOtherInfo(appendRef(imageInfo.getOtherInfo(),
+                    new ReportRefJSON(systemVersionItem.getId(), systemVersionItem.getName(),
+                            buildContentUrl(sourceID, systemVersionItem.getId()))));
+        }
+
+        // preferences.plist for ComputerName, HostName, LocalHostName, model/serial/arch hints
+        IItem prefs = findFirstByName(source, uuid, "preferences.plist");
+        if (prefs != null) {
+            NSDictionary prefsDict = parsePlistDict(prefs);
+            String computerName = null, hostName = null, localHostName = null;
+            String model = null, serial = null, arch = null;
+            if (prefsDict != null) {
+                computerName = dictStringValue(prefsDict, "ComputerName");
+                hostName = dictStringValue(prefsDict, "HostName");
+                localHostName = dictStringValue(prefsDict, "LocalHostName");
+                model = firstNonNull(dictStringValue(prefsDict, "HWModelString"),
+                        dictStringValue(prefsDict, "Model"));
+                serial = dictStringValue(prefsDict, "IOPlatformSerialNumber");
+                arch = detectArchitectureFromDict(prefsDict);
+                LOGGER.debug("preferences.plist parsed via dd-plist: computer={}, host={}, model={}",
+                        computerName, hostName, model);
+            } else {
+                // Fallback: try reading as text
+                String plist = readItemContent(prefs);
+                if (plist != null) {
+                    computerName = plistValue(plist, "ComputerName");
+                    hostName = plistValue(plist, "HostName");
+                    localHostName = plistValue(plist, "LocalHostName");
+                    model = firstNonNull(plistValue(plist, "HWModelString"), plistValue(plist, "Model"));
+                    serial = plistValue(plist, "IOPlatformSerialNumber");
+                    arch = detectArchitecture(plist);
+                }
+            }
+
+            imageInfo.setDeviceName(firstNonNull(imageInfo.getDeviceName(), computerName, localHostName));
+            imageInfo.setHostName(firstNonNull(imageInfo.getHostName(), hostName, localHostName, computerName));
+            imageInfo.setModel(firstNonNull(imageInfo.getModel(), model));
+            imageInfo.setSerialNumber(firstNonNull(imageInfo.getSerialNumber(), serial));
+            imageInfo.setArchitecture(firstNonNull(imageInfo.getArchitecture(), arch));
+
+            imageInfo.setOtherInfo(appendRef(imageInfo.getOtherInfo(),
+                    new ReportRefJSON(prefs.getId(), prefs.getName(),
+                            buildContentUrl(sourceID, prefs.getId()))));
+        }
+
+        // Users list from /Users/* directories
+        List<String> users = collectUsers(source, uuid);
+        if (!users.isEmpty()) {
+            imageInfo.setUsers(users);
+        }
+
+        // Connected devices: com.apple.sidebarlists.plist
+        List<ReportRefJSON> sidebarRefs = collectByName(source, sourceID, uuid, "com.apple.sidebarlists.plist");
+        if (!sidebarRefs.isEmpty()) {
+            imageInfo.setConnectedDevices(sidebarRefs);
+        }
+    }
+
+    private IItem findFirstByName(IPEDSource source, String uuid, String name) throws Exception {
+        String query = BasicProps.NAME + ":\"" + name + "\" AND " + BasicProps.EVIDENCE_UUID + ":\"" + uuid
+                + "\"";
+        SearchResult sr = searchItems(source, query);
+        if (sr.getLength() == 0) {
+            return null;
+        }
+        return source.getItemByID(sr.getId(0));
+    }
+
+    private List<ReportRefJSON> collectByName(IPEDSource source, String sourceID, String uuid, String name)
+            throws Exception {
+        String query = BasicProps.NAME + ":\"" + name + "\" AND " + BasicProps.EVIDENCE_UUID + ":\"" + uuid
+                + "\"";
+        return searchAndMapToReportRefs(source, sourceID, query);
+    }
+
+    private String plistValue(String plist, String key) {
+        if (plist == null || key == null) {
+            return null;
+        }
+
+        String escapedKey = Pattern.quote(key);
+        Pattern xmlPattern = Pattern.compile("<key>\\s*" + escapedKey
+                + "\\s*</key>\\s*<(string|integer|real|date)>([^<]+)</\\1>",
+                Pattern.CASE_INSENSITIVE | Pattern.DOTALL);
+        Matcher m = xmlPattern.matcher(plist);
+        if (m.find()) {
+            return m.group(2).trim();
+        }
+
+        Pattern asciiPattern = Pattern.compile(escapedKey + "\\s*=\\s*\"([^\"]+)\";",
+                Pattern.CASE_INSENSITIVE);
+        m = asciiPattern.matcher(plist);
+        if (m.find()) {
+            return m.group(1).trim();
+        }
+
+        Pattern barePattern = Pattern.compile(escapedKey + "\\s*=\\s*([^;\\r\\n]+)", Pattern.CASE_INSENSITIVE);
+        m = barePattern.matcher(plist);
+        if (m.find()) {
+            return m.group(1).trim();
+        }
+
+        return null;
+    }
+
+    private String detectArchitecture(String plist) {
+        if (plist == null) {
+            return null;
+        }
+
+        String arch = firstNonNull(plistValue(plist, "Architecture"), plistValue(plist, "arch"));
+        if (arch != null) {
+            return arch;
+        }
+
+        String lower = plist.toLowerCase();
+        if (lower.contains("arm64") || lower.contains("apple m1") || lower.contains("apple m2")
+                || lower.contains("apple silicon")) {
+            return "arm64";
+        }
+        if (lower.contains("x86_64") || lower.contains("intel")) {
+            return "x86_64";
+        }
+        return null;
+    }
+
+    /**
+     * Detect architecture from a parsed NSDictionary (binary or XML plist).
+     */
+    private String detectArchitectureFromDict(NSDictionary dict) {
+        if (dict == null) return null;
+        String arch = firstNonNull(dictStringValue(dict, "Architecture"), dictStringValue(dict, "arch"));
+        if (arch != null) return arch;
+        // Check all string values for architecture hints
+        String allText = dict.toXMLPropertyList();
+        if (allText != null) {
+            String lower = allText.toLowerCase();
+            if (lower.contains("arm64") || lower.contains("apple m1") || lower.contains("apple m2")
+                    || lower.contains("apple silicon")) {
+                return "arm64";
+            }
+            if (lower.contains("x86_64") || lower.contains("intel")) {
+                return "x86_64";
+            }
+        }
+        return null;
+    }
+
+    private List<String> collectUsers(IPEDSource source, String uuid) throws Exception {
+        // The path field is tokenized, so a path like "/device/vol/Users/john" is stored as
+        // individual tokens: "device", "vol", "users", "john". We search for directories
+        // whose path contains the "Users" token, then filter in Java to extract usernames.
+        // Using a phrase query "Users" matches the token directly.
+        String query = BasicProps.ISDIR + ":true AND "
+            + BasicProps.PATH + ":Users AND "
+            + BasicProps.EVIDENCE_UUID + ":\"" + uuid + "\"";
+        SearchResult sr = searchItems(source, query);
+        LOGGER.debug("collectUsers query returned {} results for uuid {}", sr.getLength(), uuid);
+        LinkedHashSet<String> users = new LinkedHashSet<>();
+
+        for (int i = 0; i < sr.getLength(); i++) {
+            int itemId = sr.getId(i);
+            int luceneId = source.getLuceneId(itemId);
+            Document doc = source.getReader().document(luceneId);
+            String path = getDocField(doc, BasicProps.PATH);
+            LOGGER.debug("collectUsers candidate path: {}", path);
+            String user = extractUserFromPath(path);
+            if (user != null) {
+                users.add(user);
+            }
+        }
+
+        LOGGER.debug("collectUsers found {} users: {}", users.size(), users);
+        return new ArrayList<>(users);
+    }
+
+    private String extractUserFromPath(String path) {
+        if (path == null) {
+            return null;
+        }
+        String normalized = path.replace('\\', '/');
+        int idx = normalized.indexOf("/Users/");
+        if (idx == -1) {
+            if (normalized.startsWith("Users/")) {
+                idx = 0;
+            } else {
+                return null;
+            }
+        }
+
+        String remainder = normalized.substring(idx + "/Users/".length());
+        if (remainder.isEmpty()) {
+            return null;
+        }
+        int slash = remainder.indexOf('/');
+        String user = (slash >= 0) ? remainder.substring(0, slash) : remainder;
+        if (user.isEmpty()) {
+            return null;
+        }
+        if ("Shared".equalsIgnoreCase(user)) {
+            return null;
+        }
+        return user;
+    }
+
+    private List<ReportRefJSON> appendRef(List<ReportRefJSON> refs, ReportRefJSON ref) {
+        if (ref == null) {
+            return refs;
+        }
+        List<ReportRefJSON> list = (refs != null) ? new ArrayList<>(refs) : new ArrayList<>();
+        list.add(ref);
+        return list;
     }
 
     // ---- Helper methods ----
@@ -630,12 +1020,19 @@ public class DeviceInfo {
     }
 
     private String readInputStream(InputStream is) throws IOException {
+        return readInputStream(is, Integer.MAX_VALUE);
+    }
+
+    private String readInputStream(InputStream is, int maxBytes) throws IOException {
         StringBuilder sb = new StringBuilder();
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
             char[] buffer = new char[8192];
+            int totalRead = 0;
             int read;
             while ((read = reader.read(buffer)) != -1) {
                 sb.append(buffer, 0, read);
+                totalRead += read;
+                if (totalRead >= maxBytes) break;
             }
         }
         return sb.toString();

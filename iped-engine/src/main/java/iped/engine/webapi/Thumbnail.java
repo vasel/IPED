@@ -131,7 +131,7 @@ public class Thumbnail {
             String hasThumb = doc.get(ThumbTask.HAS_THUMB);
             String hash = doc.get(BasicProps.HASH);
 
-            if (hash != null && !hash.isEmpty() && Boolean.parseBoolean(hasThumb)) {
+            if (hash != null && !hash.isEmpty()) {
                 String contentType = doc.get(BasicProps.CONTENTTYPE);
                 File moduleDir = source.getModuleDir();
 
