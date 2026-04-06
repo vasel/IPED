@@ -1063,6 +1063,9 @@ public class RequestMonitorConsole implements Runnable {
 
         System.out.println("\n=== Background Process Status ===");
         System.out.println(snapshot.summaryLine());
+        if (snapshot.getLastError() != null) {
+            System.out.println("Last error: " + snapshot.getLastError());
+        }
     }
 
     private void watchBackgroundProcess() {
@@ -1089,6 +1092,9 @@ public class RequestMonitorConsole implements Runnable {
                 System.out.println("Generated:  " + snapshot.getGenerated());
                 System.out.println("Skipped:    " + snapshot.getSkipped());
                 System.out.println("Errors:     " + snapshot.getErrors());
+                if (snapshot.getLastError() != null) {
+                    System.out.println("Last error: " + snapshot.getLastError());
+                }
                 System.out.println("Elapsed:    " + formatDuration(snapshot.getElapsedMs()));
                 System.out.println(DIM + "Updated:    " + java.time.Instant.ofEpochMilli(snapshot.getUpdatedAt()) + RESET);
                 System.out.println();

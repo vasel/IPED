@@ -3,13 +3,18 @@ package iped.engine.webapi;
 import java.awt.Color;
 import java.awt.Graphics2D;
 import java.awt.image.BufferedImage;
+import java.io.BufferedReader;
+import java.io.BufferedWriter;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
+import java.io.FileReader;
+import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
 import java.nio.file.Files;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -26,6 +31,8 @@ import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.util.Bits;
 import org.apache.lucene.util.BytesRef;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import iped.data.IItem;
 import iped.engine.data.IPEDSource;
@@ -40,6 +47,9 @@ import iped.viewers.util.LibreOfficeFinder;
 public class ThumbnailProcessor implements Runnable {
 
     private static final int THUMB_SIZE = 480;
+    private static final int MAX_ERROR_MESSAGE_LENGTH = 300;
+    private static final Logger LOGGER = LoggerFactory.getLogger(ThumbnailProcessor.class);
+
 
     private static final String RESET = "\033[0m";
     private static final String GREEN = "\033[32m";
@@ -53,7 +63,7 @@ public class ThumbnailProcessor implements Runnable {
     private static final Set<String> IMAGE_EXTENSIONS = Collections.unmodifiableSet(
             new LinkedHashSet<String>(Arrays.asList("jpg", "jpeg", "png", "gif", "bmp", "wbmp", "tif", "tiff")));
 
-        private static final Set<String> LIBREOFFICE_EXTENSIONS = Collections.unmodifiableSet(
+    private static final Set<String> LIBREOFFICE_EXTENSIONS = Collections.unmodifiableSet(
             new LinkedHashSet<String>(Arrays.asList(
                 // Writer / text documents
                 "doc", "docx", "docm", "dot", "dotx", "dotm", "rtf",
@@ -215,6 +225,7 @@ public class ThumbnailProcessor implements Runnable {
 
                 Set<String> fields = new HashSet<String>();
                 fields.add(BasicProps.EXT);
+                fields.add(BasicProps.CONTENTTYPE);
                 fields.add(BasicProps.HASH);
                 fields.add(BasicProps.THUMB);
                 fields.add(BasicProps.NAME);
@@ -227,6 +238,12 @@ public class ThumbnailProcessor implements Runnable {
                 }
                 ext = ext.toLowerCase();
                 if (!requestedExtensions.contains(ext)) {
+                    continue;
+                }
+
+                String contentType = doc.get(BasicProps.CONTENTTYPE);
+                if (!isProcessableType(ext, contentType)) {
+                    incrementSkipped();
                     continue;
                 }
 
@@ -258,10 +275,11 @@ public class ThumbnailProcessor implements Runnable {
                         saveThumbToDisk(thumbsDir, hash, thumbBytes);
                         incrementGenerated();
                     } else {
-                        incrementErrors();
+                        recordError("No thumbnail generated for " + name);
                     }
                 } catch (Exception e) {
-                    incrementErrors();
+                    LOGGER.warn("Error generating thumbnail for {} ({})", name, ext, e);
+                    recordError(buildItemErrorMessage(name, e));
                 }
 
                 StatusSnapshot snapshot = STATUS.get();
@@ -319,6 +337,41 @@ public class ThumbnailProcessor implements Runnable {
         return null;
     }
 
+    private boolean isProcessableType(String ext, String contentType) {
+        if (!LIBREOFFICE_EXTENSIONS.contains(ext)) {
+            return true;
+        }
+        if (contentType == null || contentType.trim().isEmpty()) {
+            return true;
+        }
+        return isLibreOfficeContentType(contentType);
+    }
+
+    private boolean isLibreOfficeContentType(String contentType) {
+        String m = contentType.toLowerCase();
+        return m.startsWith("application/msword")
+                || m.equals("application/rtf")
+                || m.startsWith("application/vnd.ms-word")
+                || m.startsWith("application/vnd.openxmlformats-officedocument")
+                || m.startsWith("application/vnd.oasis.opendocument")
+                || m.startsWith("application/vnd.sun.xml")
+                || m.startsWith("application/vnd.stardivision")
+                || m.equals("application/vnd.visio")
+                || m.equals("application/x-mspublisher")
+                || m.equals("application/postscript")
+                || m.equals("image/x-pcx")
+                || m.equals("image/vnd.dxf")
+                || m.equals("image/cdr")
+                || m.equals("application/coreldraw")
+                || m.equals("application/x-vnd.corel.zcf.draw.document+zip")
+                || m.startsWith("application/vnd.ms-powerpoint")
+                || m.startsWith("application/vnd.openxmlformats-officedocument.presentationml")
+                || m.startsWith("application/vnd.ms-excel")
+                || m.startsWith("application/x-tika-msworks-spreadsheet")
+                || m.startsWith("application/vnd.openxmlformats-officedocument.spreadsheetml")
+                || m.startsWith("application/vnd.oasis.opendocument.spreadsheet");
+    }
+
     private byte[] generatePdfThumbnail(IItem item) throws Exception {
         try {
             File tempFile = item.getTempFile();
@@ -372,6 +425,7 @@ public class ThumbnailProcessor implements Runnable {
         File loOutDir = null;
         File outFile = null;
         Process convertProcess = null;
+        Process loEnvCreateProcess = null;
         try {
             File inFile = item.getTempFile();
             if (inFile == null) {
@@ -379,12 +433,31 @@ public class ThumbnailProcessor implements Runnable {
             }
 
             loOutDir = Files.createTempDirectory("webapi-doc-thumb").toFile();
-            String loOutPath = loOutDir.getAbsolutePath().replace('\\', '/');
-            if (System.getProperty("os.name").toLowerCase().contains("windows")) {
-                loOutPath = '/' + loOutPath;
-            }
+            String loOutUri = toLibreOfficeFileUri(loOutDir);
 
-            List<String> cmd = new java.util.ArrayList<String>();
+            List<String> envCmd = new ArrayList<String>();
+            envCmd.add(libreOfficePath + "/program/soffice.bin");
+            envCmd.add("--headless");
+            envCmd.add("--quickstart");
+            envCmd.add("--norestore");
+            envCmd.add("--nolockcheck");
+            envCmd.add("-env:UserInstallation=" + loOutUri);
+
+            ProcessBuilder envPb = new ProcessBuilder(envCmd.toArray(new String[0]));
+            envPb.redirectErrorStream(true);
+            loEnvCreateProcess = envPb.start();
+            String envOutput = readProcessOutput(loEnvCreateProcess);
+            loEnvCreateProcess.waitFor();
+            if (loEnvCreateProcess.exitValue() != 0) {
+                LOGGER.info("LibreOffice profile initialization exited with code {}: {}",
+                    loEnvCreateProcess.exitValue(), summarize(envOutput));
+            }
+                finishProcess(loEnvCreateProcess);
+                loEnvCreateProcess = null;
+
+            setLOTemp(loOutDir, loOutUri);
+
+            List<String> cmd = new ArrayList<String>();
             cmd.add(libreOfficePath + "/program/soffice.bin");
             cmd.add("--convert-to");
             cmd.add("png");
@@ -393,15 +466,20 @@ public class ThumbnailProcessor implements Runnable {
             cmd.add("--quickstart");
             cmd.add("--norestore");
             cmd.add("--nolockcheck");
-            cmd.add("-env:UserInstallation=file://" + loOutPath);
+            cmd.add("-env:UserInstallation=" + loOutUri);
             cmd.add("--outdir");
             cmd.add(loOutDir.getAbsolutePath());
 
             ProcessBuilder pb = new ProcessBuilder(cmd.toArray(new String[0]));
             pb.redirectErrorStream(true);
             convertProcess = pb.start();
-            ignoreProcessOutput(convertProcess);
+            String processOutput = readProcessOutput(convertProcess);
             convertProcess.waitFor();
+
+            if (convertProcess.exitValue() != 0) {
+                throw new IOException("LibreOffice conversion failed (exit=" + convertProcess.exitValue() + "): "
+                        + summarize(processOutput));
+            }
 
             String name = inFile.getName();
             int pos = name.lastIndexOf('.');
@@ -410,7 +488,7 @@ public class ThumbnailProcessor implements Runnable {
             }
             outFile = new File(loOutDir, name + ".png");
             if (!outFile.exists()) {
-                return null;
+                throw new IOException("LibreOffice did not produce PNG output: " + summarize(processOutput));
             }
 
             BufferedImage img = ImageIO.read(outFile);
@@ -431,6 +509,7 @@ public class ThumbnailProcessor implements Runnable {
             return baos.toByteArray();
 
         } finally {
+            finishProcess(loEnvCreateProcess);
             if (convertProcess != null && convertProcess.isAlive()) {
                 convertProcess.destroyForcibly();
             }
@@ -441,6 +520,15 @@ public class ThumbnailProcessor implements Runnable {
                 deleteDirectory(loOutDir);
             }
             cleanupItem(item);
+        }
+    }
+
+    private static void finishProcess(Process process) {
+        try {
+            if (process != null && process.isAlive()) {
+                process.destroyForcibly();
+            }
+        } catch (Throwable ignore) {
         }
     }
 
@@ -488,20 +576,64 @@ public class ThumbnailProcessor implements Runnable {
         return libreOfficePath != null && !libreOfficePath.trim().isEmpty();
     }
 
-    private static void ignoreProcessOutput(Process process) {
-        Thread t = new Thread(() -> {
-            try (InputStream is = process.getInputStream()) {
-                byte[] buffer = new byte[8192];
-                while (is.read(buffer) != -1) {
-                    if (Thread.currentThread().isInterrupted()) {
-                        return;
+    private static String readProcessOutput(Process process) throws IOException {
+        ByteArrayOutputStream baos = new ByteArrayOutputStream(8192);
+        try (InputStream is = process.getInputStream()) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = is.read(buffer)) != -1) {
+                baos.write(buffer, 0, read);
+            }
+        }
+        return baos.toString();
+    }
+
+    private static void setLOTemp(File loOutDir, String loOutUri) {
+        try {
+            File cfgIn = new File(loOutDir, "user/registrymodifications.xcu");
+            File cfgOut = new File(loOutDir, "user/registrymodifications.tmp");
+            if (!cfgIn.exists()) {
+                return;
+            }
+            try (BufferedReader in = new BufferedReader(new FileReader(cfgIn));
+                    BufferedWriter out = new BufferedWriter(new FileWriter(cfgOut))) {
+                String line;
+                int cnt = 0;
+                while ((line = in.readLine()) != null) {
+                    out.write(line);
+                    out.newLine();
+                    if (++cnt == 2) {
+                        out.write("<item oor:path=\"/org.openoffice.Office.Common/Misc\"><prop oor:name=\"FirstRun\" oor:op=\"fuse\"><value>false</value></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Common/Misc\"><prop oor:name=\"UseLocking\" oor:op=\"fuse\"><value>false</value></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Common/Save/Document\"><prop oor:name=\"AutoSave\" oor:op=\"fuse\"><value>false</value></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Common/Save/Document\"><prop oor:name=\"LoadPrinter\" oor:op=\"fuse\"><value>false</value></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Common/Save/Document\"><prop oor:name=\"CreateBackup\" oor:op=\"fuse\"><value>false</value></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Impress/Filter/Import/VBA\"><prop oor:name=\"Load\" oor:op=\"fuse\"><value>false</value></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Writer/Filter/Import/VBA\"><prop oor:name=\"Load\" oor:op=\"fuse\"><value>false</value></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Calc/Filter/Import/VBA\"><prop oor:name=\"Load\" oor:op=\"fuse\"><value>false</value></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Common/Path/Current\"><prop oor:name=\"Temp\" oor:op=\"fuse\"><value xsi:nil=\"true\"/></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Common/Path/Info\"><prop oor:name=\"WorkPathChanged\" oor:op=\"fuse\"><value>false</value></prop></item>");
+                        out.newLine();
+                        out.write("<item oor:path=\"/org.openoffice.Office.Paths/Paths/org.openoffice.Office.Paths:NamedPath['Temp']\"><prop oor:name=\"WritePath\" oor:op=\"fuse\"><value>"
+                            + loOutUri + "</value></prop></item>");
+                        out.newLine();
                     }
                 }
-            } catch (IOException e) {
             }
-        }, "ThumbnailProcessor-stdout");
-        t.setDaemon(true);
-        t.start();
+            cfgIn.delete();
+            cfgOut.renameTo(cfgIn);
+        } catch (Exception e) {
+            LOGGER.warn("Error setting LibreOffice temp directory", e);
+        }
     }
 
     private static void deleteDirectory(File dir) {
@@ -516,6 +648,15 @@ public class ThumbnailProcessor implements Runnable {
             }
         }
         dir.delete();
+    }
+
+    private static String toLibreOfficeFileUri(File dir) {
+        String uri = dir.toURI().toASCIIString();
+        if (System.getProperty("os.name").toLowerCase().contains("windows")
+                && uri.startsWith("file:/") && !uri.startsWith("file:///")) {
+            return "file:///" + uri.substring("file:/".length());
+        }
+        return uri;
     }
 
     private static void ensureNotInterrupted() throws InterruptedException {
@@ -548,6 +689,31 @@ public class ThumbnailProcessor implements Runnable {
         updateStatus(s.withCounters(s.getMatched(), s.getGenerated(), s.getSkipped(), s.getErrors() + 1));
     }
 
+    private static void recordError(String errorMessage) {
+        StatusSnapshot s = STATUS.get();
+        updateStatus(s.withError(s.getMatched(), s.getGenerated(), s.getSkipped(), s.getErrors() + 1,
+                summarize(errorMessage)));
+    }
+
+    private static String buildItemErrorMessage(String itemName, Exception e) {
+        String base = e.getMessage();
+        if (base == null || base.trim().isEmpty()) {
+            base = e.getClass().getSimpleName();
+        }
+        return itemName + ": " + base;
+    }
+
+    private static String summarize(String text) {
+        if (text == null) {
+            return null;
+        }
+        String normalized = text.replace('\r', ' ').replace('\n', ' ').trim().replaceAll("\\s+", " ");
+        if (normalized.length() <= MAX_ERROR_MESSAGE_LENGTH) {
+            return normalized;
+        }
+        return normalized.substring(0, MAX_ERROR_MESSAGE_LENGTH - 3) + "...";
+    }
+
     private static String formatDuration(long ms) {
         if (ms < 1000) {
             return ms + "ms";
@@ -575,10 +741,12 @@ public class ThumbnailProcessor implements Runnable {
         private final int generated;
         private final int skipped;
         private final int errors;
+        private final String lastError;
 
         private StatusSnapshot(boolean running, boolean finished, boolean cancelled, String message,
                 String currentSource, String currentItem, Set<String> extensions, boolean force,
-                long startedAt, long updatedAt, int matched, int generated, int skipped, int errors) {
+            long startedAt, long updatedAt, int matched, int generated, int skipped, int errors,
+            String lastError) {
             this.running = running;
             this.finished = finished;
             this.cancelled = cancelled;
@@ -593,48 +761,56 @@ public class ThumbnailProcessor implements Runnable {
             this.generated = generated;
             this.skipped = skipped;
             this.errors = errors;
+            this.lastError = lastError;
         }
 
         public static StatusSnapshot idle() {
             long now = System.currentTimeMillis();
             return new StatusSnapshot(false, false, false, "idle", null, null,
-                    Collections.<String>emptySet(), false, 0L, now, 0, 0, 0, 0);
+                    Collections.<String>emptySet(), false, 0L, now, 0, 0, 0, 0, null);
         }
 
         public static StatusSnapshot running(Set<String> extensions, boolean force, long startedAt) {
             return new StatusSnapshot(true, false, false, "running", null, null,
                     Collections.unmodifiableSet(new LinkedHashSet<String>(extensions)), force,
-                    startedAt, startedAt, 0, 0, 0, 0);
+                    startedAt, startedAt, 0, 0, 0, 0, null);
         }
 
         public StatusSnapshot withCurrentSource(String currentSource) {
             return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors);
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
         }
 
         public StatusSnapshot withCurrentItem(String currentItem) {
             return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors);
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
         }
 
         public StatusSnapshot withCounters(int matched, int generated, int skipped, int errors) {
             return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors);
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
+        }
+
+        public StatusSnapshot withError(int matched, int generated, int skipped, int errors, String lastError) {
+            return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
         }
 
         public StatusSnapshot withUpdatedAt(long updatedAt) {
             return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors);
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
         }
 
         public StatusSnapshot finish(boolean cancelled, String message) {
             return new StatusSnapshot(false, true, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, System.currentTimeMillis(), matched, generated, skipped, errors);
+                    extensions, force, startedAt, System.currentTimeMillis(), matched, generated, skipped, errors,
+                    lastError);
         }
 
         public StatusSnapshot fail(String message) {
             return new StatusSnapshot(false, true, false, "failed: " + message, currentSource, currentItem,
-                    extensions, force, startedAt, System.currentTimeMillis(), matched, generated, skipped, errors);
+                    extensions, force, startedAt, System.currentTimeMillis(), matched, generated, skipped, errors,
+                    lastError);
         }
 
         public boolean isRunning() {
@@ -693,6 +869,10 @@ public class ThumbnailProcessor implements Runnable {
             return errors;
         }
 
+        public String getLastError() {
+            return lastError;
+        }
+
         public long getElapsedMs() {
             if (startedAt <= 0) {
                 return 0;
@@ -709,6 +889,7 @@ public class ThumbnailProcessor implements Runnable {
                     + ", generated=" + generated
                     + ", skipped=" + skipped
                     + ", errors=" + errors
+                    + (lastError != null ? ", lastError=" + lastError : "")
                     + ", elapsed=" + formatDuration(getElapsedMs())
                     + ", updated=" + Instant.ofEpochMilli(updatedAt);
         }

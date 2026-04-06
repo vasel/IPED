@@ -89,7 +89,7 @@ public class Sources {
             srcIndex++;
             JSONObject jsonobj = (JSONObject) object;
             String id = (String) jsonobj.get("id");
-            File file = new File((String) jsonobj.get("path"));
+            File file = new File(fixUNCPath((String) jsonobj.get("path")));
 
             sourcePathToStringID.put(file.toString(), id);
 
@@ -181,7 +181,7 @@ public class Sources {
     @Produces(MediaType.APPLICATION_JSON)
     public synchronized static Response addSource(@Parameter(required = true) SourceJSON sourcejson) {
         String id = sourcejson.getId();
-        String path = sourcejson.getPath();
+        String path = fixUNCPath(sourcejson.getPath());
         if (sourceStringToInt.containsKey(id)) {
             throw new RuntimeException("duplicated id: " + id);
         }
@@ -381,6 +381,13 @@ public class Sources {
     @Produces(MediaType.APPLICATION_JSON)
     public static synchronized Response reloadGet() throws IOException, ParseException {
         return doReload();
+    }
+
+    private static String fixUNCPath(String path) {
+        if (path != null && path.startsWith("\\") && !path.startsWith("\\\\")) {
+            path = "\\" + path;
+        }
+        return path;
     }
 
     private static Response doReload() throws IOException, ParseException {
