@@ -18,8 +18,10 @@
  */
 package iped.engine.task.index;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
 import java.lang.reflect.Constructor;
 import java.net.URI;
 import java.nio.ByteBuffer;
@@ -72,6 +74,8 @@ import org.apache.tika.metadata.TikaCoreProperties;
 import org.apache.tika.mime.MediaType;
 import org.apache.tika.utils.DateUtils;
 import org.sleuthkit.datamodel.SleuthkitCase;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import iped.data.IItem;
 import iped.datasource.IDataSource;
@@ -106,6 +110,8 @@ import iped.utils.UTF8Properties;
  */
 public class IndexItem extends BasicProps {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(IndexItem.class);
+
     public static final String GEO_SSDV_PREFIX = "geo_ssdv_";
 
     public static final String IGNORE_CONTENT_REF = "ignoreContentRef"; //$NON-NLS-1$
@@ -121,6 +127,29 @@ public class IndexItem extends BasicProps {
     private static final String NEW_DATASOURCE_PATH_FILE = "data/newDataSourceLocations.txt";
 
     private static final int MAX_DOCVALUE_SIZE = 4096;
+
+    private static volatile boolean useConsoleForMissingDataSources = false;
+
+    /**
+     * Optional callback for reading a line from the console.
+     * When set (e.g. by RequestMonitorConsole), stdin reads go through
+     * this callback so there is only one BufferedReader on System.in.
+     * The function receives null (no prompt needed here) and returns the line.
+     */
+    private static volatile ConsoleLineReader consoleLineReader = null;
+
+    @FunctionalInterface
+    public interface ConsoleLineReader {
+        String readLine(String prompt) throws IOException;
+    }
+
+    public static void setConsoleLineReader(ConsoleLineReader reader) {
+        consoleLineReader = reader;
+    }
+
+    public static void setUseConsoleForMissingDataSources(boolean enabled) {
+        useConsoleForMissingDataSources = enabled;
+    }
 
     public static final char EVENT_IDX_SEPARATOR = ';';
     public static final char EVENT_IDX_SEPARATOR2 = ',';
@@ -457,7 +486,8 @@ public class IndexItem extends BasicProps {
         }
 
         byte[] similarityFeatures = (byte[]) evidence.getExtraAttribute(ImageSimilarityTask.IMAGE_FEATURES);
-        // clear extra property to don't add it again later when iterating over extra props
+        // clear extra property to don't add it again later when iterating over extra
+        // props
         evidence.getExtraAttributeMap().remove(ImageSimilarityTask.IMAGE_FEATURES);
         if (similarityFeatures != null) {
             doc.add(new BinaryDocValuesField(ImageSimilarityTask.IMAGE_FEATURES, new BytesRef(similarityFeatures)));
@@ -867,9 +897,10 @@ public class IndexItem extends BasicProps {
                     SeekableInputStreamFactory sisf = inputStreamFactories.get(sourcePath);
                     if (sisf == null) {
                         @SuppressWarnings("unchecked")
-                        Class<SeekableInputStreamFactory> clazz = (Class<SeekableInputStreamFactory>) Class.forName(className);
+                        Class<SeekableInputStreamFactory> clazz = (Class<SeekableInputStreamFactory>) Class
+                                .forName(className);
                         try {
-                            Constructor<SeekableInputStreamFactory> c =  clazz.getConstructor(Path.class);
+                            Constructor<SeekableInputStreamFactory> c = clazz.getConstructor(Path.class);
                             sisf = c.newInstance(Path.of(sourcePath));
 
                         } catch (NoSuchMethodException e) {
@@ -918,9 +949,11 @@ public class IndexItem extends BasicProps {
                         boolean isImage = MetadataUtil.isImageType(evidence.getMediaType());
                         boolean isVideo = MetadataUtil.isVideoType(evidence.getMediaType());
                         if (isImage || isVideo) {
-                            String thumbFolder = isImage ? ThumbTask.THUMBS_FOLDER_NAME : PreviewConstants.VIEW_FOLDER_NAME;
+                            String thumbFolder = isImage ? ThumbTask.THUMBS_FOLDER_NAME
+                                    : PreviewConstants.VIEW_FOLDER_NAME;
                             String thumbExt = isImage ? ThumbTask.THUMB_EXT : VideoThumbTask.PREVIEW_EXT;
-                            File thumbFile = Util.getFileFromHash(new File(outputBase, thumbFolder), evidence.getHash(), thumbExt);
+                            File thumbFile = Util.getFileFromHash(new File(outputBase, thumbFolder), evidence.getHash(),
+                                    thumbExt);
                             try {
                                 if (thumbFile.exists()) {
                                     evidence.setThumb(Files.readAllBytes(thumbFile.toPath()));
@@ -937,7 +970,8 @@ public class IndexItem extends BasicProps {
                     evidence.setExtraAttribute(ImageSimilarityTask.IMAGE_FEATURES, bytesRef.bytes);
                 }
 
-                viewFile = Util.findFileFromHash(new File(outputBase, PreviewConstants.VIEW_FOLDER_NAME), evidence.getHash());
+                viewFile = Util.findFileFromHash(new File(outputBase, PreviewConstants.VIEW_FOLDER_NAME),
+                        evidence.getHash());
                 if (viewFile != null) {
                     evidence.setViewFile(viewFile);
                 }
@@ -1037,9 +1071,21 @@ public class IndexItem extends BasicProps {
             throws IOException {
         Path path = Paths.get(sisf.getDataSourceURI());
         if (path != null && !Files.exists(path)) {
+            long start = System.currentTimeMillis();
+            LOGGER.warn("Data source missing: {} (decoder={})", path, sisf.getClass().getSimpleName());
             Path newPath = loadDataSourcePath(caseModuleDir, path);
             if (newPath != null && Files.exists(newPath)) {
                 sisf.setDataSourceURI(newPath.toUri());
+                LOGGER.info("Data source remapped using saved location: {} -> {} ({} ms)", path, newPath,
+                        System.currentTimeMillis() - start);
+                return;
+            }
+            if (useConsoleForMissingDataSources) {
+                Path newConsolePath = askDataSourcePathInConsole(path);
+                sisf.setDataSourceURI(newConsolePath.toUri());
+                saveDataSourcePath(caseModuleDir, path, newConsolePath);
+                LOGGER.info("Data source remapped via console input: {} -> {} ({} ms)", path, newConsolePath,
+                        System.currentTimeMillis() - start);
                 return;
             }
             SelectImagePathWithDialog siwd = new SelectImagePathWithDialog(path.toFile(), true);
@@ -1047,7 +1093,55 @@ public class IndexItem extends BasicProps {
             if (newDataSource != null) {
                 sisf.setDataSourceURI(newDataSource.toPath().toUri());
                 saveDataSourcePath(caseModuleDir, path, newDataSource.toPath());
+                LOGGER.info("Data source remapped via GUI selection: {} -> {} ({} ms)", path,
+                        newDataSource.toPath(), System.currentTimeMillis() - start);
             }
+        }
+    }
+
+    private static Path askDataSourcePathInConsole(Path missingPath) throws IOException {
+        // If a shared console reader is registered (e.g. from RequestMonitorConsole),
+        // use it so we don't create a competing BufferedReader on System.in.
+        ConsoleLineReader sharedReader = consoleLineReader;
+        BufferedReader fallbackReader = sharedReader == null
+                ? new BufferedReader(new InputStreamReader(System.in))
+                : null;
+        LOGGER.info("Prompting for missing data source path: {}", missingPath);
+        int attempts = 0;
+        long start = System.currentTimeMillis();
+        while (true) {
+            System.out.println("Missing data source: " + missingPath.toString());
+            String prompt = "Enter new path: ";
+            String line;
+            if (sharedReader != null) {
+                System.out.print(prompt);
+                line = sharedReader.readLine(prompt);
+            } else {
+                System.out.print(prompt);
+                line = fallbackReader.readLine();
+            }
+            if (line == null) {
+                throw new IOException("Data source path not provided");
+            }
+            // Strip surrounding quotes if present (user may paste quoted paths)
+            String trimmed = line.trim();
+            if (trimmed.length() >= 2
+                    && ((trimmed.startsWith("\"") && trimmed.endsWith("\""))
+                            || (trimmed.startsWith("'") && trimmed.endsWith("'")))) {
+                trimmed = trimmed.substring(1, trimmed.length() - 1).trim();
+            }
+            if (trimmed.isEmpty()) {
+                throw new IOException("Data source path not provided");
+            }
+            Path candidate = Paths.get(trimmed);
+            if (Files.exists(candidate)) {
+                LOGGER.info("Data source path provided after {} attempt(s): {} ({} ms)", attempts + 1, candidate,
+                        System.currentTimeMillis() - start);
+                return candidate;
+            }
+            LOGGER.warn("Path not found while remapping data source (attempt {}): {}", attempts + 1, trimmed);
+            System.out.println("Path not found: " + trimmed);
+            attempts++;
         }
     }
 

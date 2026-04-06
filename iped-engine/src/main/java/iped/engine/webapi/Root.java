@@ -11,6 +11,6 @@ import javax.ws.rs.core.Response;
 public class Root {
     @GET
     public static Response root() throws URISyntaxException {
-        return Response.temporaryRedirect(new URI("./swagger.json")).build();
+        return Response.temporaryRedirect(new URI("./openapi.json")).build();
     }
 }

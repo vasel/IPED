@@ -11,7 +11,10 @@ import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
 import org.glassfish.jersey.server.ResourceConfig;
 import org.json.simple.parser.ParseException;
 
-import io.swagger.jaxrs.config.BeanConfig;
+import io.swagger.v3.jaxrs2.integration.resources.OpenApiResource;
+import io.swagger.v3.oas.integration.SwaggerConfiguration;
+import io.swagger.v3.oas.models.OpenAPI;
+import io.swagger.v3.oas.models.info.Info;
 import iped.engine.Version;
 
 /**
@@ -19,6 +22,9 @@ import iped.engine.Version;
  *
  */
 public class Main {
+
+    static volatile HttpServer httpServer;
+
     /**
      * Starts Grizzly HTTP server exposing JAX-RS resources defined in this
      * application.
@@ -27,26 +33,53 @@ public class Main {
      * @throws IOException
      * @throws ParseException
      */
-    public static HttpServer startServer(String host, int port, String urlToAskSources)
-            throws IOException, ParseException {
+            public static HttpServer startServer(String host, int port, String urlToAskSources, boolean enableGraph,
+                boolean checkSources, boolean precomputeStats, boolean warmup) throws Exception {
+        System.out.println("Configuring JAX-RS resources...");
         // create a resource config that scans for JAX-RS resources and providers
         // in gpinf.api package
         String resources = Main.class.getPackageName();
-        BeanConfig beanConfig = new BeanConfig();
-        beanConfig.setVersion(Version.APP_VERSION);
-        beanConfig.setSchemes(new String[] { "http" });
-        beanConfig.setBasePath("/");
-        beanConfig.setResourcePackage(resources);
-        beanConfig.setScan(true);
-        final ResourceConfig rc = new ResourceConfig().packages(resources)
-                .register(io.swagger.jaxrs.listing.ApiListingResource.class)
-                .register(io.swagger.jaxrs.listing.SwaggerSerializers.class);
 
-        Sources.init(urlToAskSources);
+        OpenAPI openAPI = new OpenAPI()
+                .info(new Info()
+                        .title("IPED WebAPI")
+                        .version(Version.APP_VERSION)
+                        .description("IPED - Digital Evidence Indexer and Processor REST API"));
+        SwaggerConfiguration oasConfig = new SwaggerConfiguration()
+                .openAPI(openAPI)
+                .resourcePackages(java.util.Collections.singleton(resources))
+                .prettyPrint(true);
+
+        final ResourceConfig rc = new ResourceConfig().packages(resources)
+                .register(OpenApiResource.class)
+                .register(ConnectionClosedExceptionMapper.class)
+                .register(RequestTrackingFilter.class)
+                .register(new ServletConfigBinder())
+                .register(SelectiveGzipInterceptor.class);
+
+        // Pass the OpenAPI configuration to the resource
+        rc.property("openApi.configuration", oasConfig);
+
+        System.out.println("Initializing sources...");
+        long initStart = System.currentTimeMillis();
+        Sources.init(urlToAskSources, checkSources, precomputeStats, warmup);
+        long initElapsed = System.currentTimeMillis() - initStart;
+        System.out.println("Sources initialized in " + initElapsed + "ms.");
+
+        // Initialize graph service if enabled
+        if (enableGraph) {
+            try {
+                MultiCaseGraphLoader.init();
+                System.out.println("Graph API enabled");
+            } catch (Exception e) {
+                System.err.println("Failed to initialize graph: " + e.getMessage());
+                e.printStackTrace();
+            }
+        }
 
         // https://stackoverflow.com/questions/26546373/showing-grizzly-exceptions-in-eclipse-console
         Logger l = Logger.getLogger("org.glassfish.grizzly.http.server.HttpHandler");
-        l.setLevel(Level.FINE);
+        l.setLevel(Level.ALL);
         l.setUseParentHandlers(false);
         ConsoleHandler ch = new ConsoleHandler();
         ch.setLevel(Level.ALL);
@@ -54,6 +87,7 @@ public class Main {
 
         // create and start a new instance of grizzly http server
         // exposing the Jersey application at BASE_URI
+        System.out.println("Starting HTTP server on " + host + ":" + port + "...");
         return GrizzlyHttpServerFactory.createHttpServer(URI.create("http://" + host + ":" + port), rc);
     }
 
@@ -67,6 +101,10 @@ public class Main {
         String host = "0.0.0.0";
         int port = 8080;
         String urlToAskSources = null;
+        boolean enableGraph = false;
+        boolean checkSources = false;
+        boolean precomputeStats = true;
+        boolean warmup = Boolean.parseBoolean(System.getProperty("iped.webapi.warmup", "true"));
 
         for (String arg : args) {
             if (arg.startsWith("--host=")) {
@@ -78,6 +116,18 @@ public class Main {
             } else if (arg.startsWith("--sources=")) {
                 urlToAskSources = arg.substring("--sources=".length());
 
+            } else if (arg.equals("--enable-graph")) {
+                enableGraph = true;
+
+            } else if (arg.equals("--check-sources")) {
+                checkSources = true;
+
+            } else if (arg.startsWith("--precompute-stats=")) {
+                precomputeStats = Boolean.parseBoolean(arg.substring("--precompute-stats=".length()));
+
+            } else if (arg.startsWith("--warmup=")) {
+                warmup = Boolean.parseBoolean(arg.substring("--warmup=".length()));
+
             } else {
                 printHelp();
                 System.exit(-1);
@@ -88,14 +138,31 @@ public class Main {
             printHelp();
             System.exit(-1);
         }
-        startServer(host, port, urlToAskSources);
+        httpServer = startServer(host, port, urlToAskSources, enableGraph, checkSources, precomputeStats, warmup);
         System.out.println(String.format("Jersey app started with WADL available at \n%sapplication.wadl\n",
                 "http://" + host + ":" + port + "/"));
+        
+        // Start the interactive request monitor console
+        RequestMonitorConsole console = new RequestMonitorConsole();
+        Thread consoleThread = new Thread(console, "RequestMonitorConsole");
+        consoleThread.setDaemon(true);
+        consoleThread.start();
+        
+        // Keep main thread alive
+        try {
+            Thread.currentThread().join();
+        } catch (InterruptedException e) {
+            console.stop();
+        }
     }
 
     public static void printHelp() {
         System.out.println("--sources=(URL|Path)\tfile or url with json: [{id, path}...]");
         System.out.println("--host=\t\tdefault:0.0.0.0");
         System.out.println("--port=\t\tdefault:8080");
+        System.out.println("--enable-graph\t\tenable graph API endpoints");
+        System.out.println("--check-sources\t\tverify data source files exist on startup");
+        System.out.println("--precompute-stats=\tprecompute counts on startup (default:true)");
+        System.out.println("--warmup=\t\tpreload search caches (default:true; can also set -Diped.webapi.warmup)");
     }
 }

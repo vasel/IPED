@@ -130,7 +130,8 @@ public class SleuthkitServer {
 
                 } catch (Throwable e) {
                     // e.printStackTrace(System.err);
-                    byte[] msgBytes = e.getMessage().getBytes("UTF-8"); //$NON-NLS-1$
+                    String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
+                    byte[] msgBytes = msg.getBytes("UTF-8"); //$NON-NLS-1$
                     out.putInt(13, msgBytes.length);
                     out.position(17);
                     out.put(msgBytes);
