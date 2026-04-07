@@ -1,6 +1,8 @@
 package iped.engine.webapi.json;
 
-import io.swagger.annotations.ApiModelProperty;
+import java.util.Map;
+
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * SourceModel represents a IPED source: { "id": "A", "path": "string" }
@@ -8,8 +10,13 @@ import io.swagger.annotations.ApiModelProperty;
 public class SourceJSON {
     private String id;
     private String path;
+    private int totalItems;
+    private double totalSizeMB;
+    private String indexDir;
+    private Map<String, Integer> categoryCounts;
+    private Map<String, Integer> bookmarkCounts;
 
-    @ApiModelProperty
+    @Schema
     public String getId() {
         return id;
     }
@@ -18,12 +25,57 @@ public class SourceJSON {
         this.id = id;
     }
 
-    @ApiModelProperty
+    @Schema
     public String getPath() {
         return path;
     }
 
     public void setPath(String path) {
         this.path = path;
+    }
+
+    @Schema
+    public int getTotalItems() {
+        return totalItems;
+    }
+
+    public void setTotalItems(int totalItems) {
+        this.totalItems = totalItems;
+    }
+
+    @Schema
+    public double getTotalSizeMB() {
+        return totalSizeMB;
+    }
+
+    public void setTotalSizeMB(double totalSizeMB) {
+        this.totalSizeMB = totalSizeMB;
+    }
+
+    @Schema
+    public String getIndexDir() {
+        return indexDir;
+    }
+
+    public void setIndexDir(String indexDir) {
+        this.indexDir = indexDir;
+    }
+
+    @Schema
+    public Map<String, Integer> getCategoryCounts() {
+        return categoryCounts;
+    }
+
+    public void setCategoryCounts(Map<String, Integer> categoryCounts) {
+        this.categoryCounts = categoryCounts;
+    }
+
+    @Schema
+    public Map<String, Integer> getBookmarkCounts() {
+        return bookmarkCounts;
+    }
+
+    public void setBookmarkCounts(Map<String, Integer> bookmarkCounts) {
+        this.bookmarkCounts = bookmarkCounts;
     }
 }

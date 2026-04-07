@@ -1,0 +1,50 @@
+name: Publish Release
+
+on:
+  workflow_run:
+    workflows: ["Java CI"]
+    types: [completed]
+    branches: [sefmg-custom]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.workflow_run.head_sha }}
+
+    - name: Extract version from pom.xml
+      id: version
+      run: |
+        VERSION=$(grep -m1 '<version>' pom.xml | sed 's/.*<version>\(.*\)<\/version>.*/\1/' | tr -d ' ')
+        echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+    - name: Download artifact from CI workflow
+      uses: actions/download-artifact@v4
+      with:
+        name: iped-snapshot-${{ github.event.workflow_run.head_sha }}
+        run-id: ${{ github.event.workflow_run.id }}
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Extract and repackage for release
+      run: |
+        tar -xzf iped-snapshot.tar.gz
+        mv iped-snapshot-${{ github.event.workflow_run.head_sha }} iped-${{ steps.version.outputs.VERSION }}
+        zip -r iped-${{ steps.version.outputs.VERSION }}.zip iped-${{ steps.version.outputs.VERSION }}
+
+    - name: Create or update GitHub Release
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        TAG="v${{ steps.version.outputs.VERSION }}"
+        gh release create "$TAG" \
+          --title "IPED ${{ steps.version.outputs.VERSION }}" \
+          --notes "Build from commit ${{ github.event.workflow_run.head_sha }}" \
+          --target "${{ github.event.workflow_run.head_sha }}" \
+          2>/dev/null || true
+        gh release upload "$TAG" "iped-${{ steps.version.outputs.VERSION }}.zip" --clobber

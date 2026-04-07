@@ -58,6 +58,7 @@ import iped.properties.BasicProps;
 import iped.properties.ExtraProperties;
 import iped.properties.MediaTypes;
 import java.io.InputStream;
+import org.xml.sax.SAXException;
 
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -885,6 +886,8 @@ public class GraphTask extends AbstractTask {
                             vICMS = parseDoubleSafe(vIcmsList.item(0).getTextContent());
                         }
                     }
+                } catch (SAXException e) {
+                    logger.warn("Skipping malformed XML in NFe/CTe: {} - {}", evidence.getName(), e.getMessage());
                 } catch (Exception e) {
                     logger.error("Error parsing XML: " + evidence.getName(), e);
                 }

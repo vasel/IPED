@@ -14,6 +14,7 @@ import org.slf4j.bridge.SLF4JBridgeHandler;
 
 import iped.app.processing.Main;
 import iped.engine.io.FilterOutputStream;
+import iped.utils.IOUtil;
 
 public class LogConfiguration {
 

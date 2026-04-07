@@ -492,6 +492,89 @@ public class GraphServiceImpl implements GraphService {
     }
 
     @Override
+    public void findRelationshipTypes(RelationshipTypeQueryListener listener) {
+        Transaction tx = null;
+        try {
+            tx = graphDB.beginTx();
+
+            StringBuilder query = new StringBuilder();
+            query.append(" MATCH ()-[r]->() ");
+            query.append(" WITH DISTINCT type(r) AS relType ");
+            query.append(" RETURN relType ");
+            query.append(" ORDER BY relType ");
+
+            Result result = tx.execute(query.toString());
+            ResourceIterator<String> resourceIterator = result.columnAs("relType");
+            while (resourceIterator.hasNext()) {
+                String relType = resourceIterator.next();
+                listener.relationshipTypeFound(relType);
+            }
+
+            tx.commit();
+        } finally {
+            tx.close();
+        }
+    }
+
+    @Override
+    public void searchByLabel(String label, NodeQueryListener listener, int maxResults) {
+        Transaction tx = null;
+        try {
+            tx = graphDB.beginTx();
+
+            String query = "MATCH (n) WHERE $label IN labels(n) RETURN n LIMIT " + maxResults;
+            Result result = tx.execute(query, Map.of("label", label));
+
+            int count = 0;
+            while (result.hasNext() && count < maxResults) {
+                Map<String, Object> map = result.next();
+                Node node = (Node) map.get("n");
+                if (!listener.nodeFound(node)) {
+                    break;
+                }
+                count++;
+            }
+
+            tx.commit();
+        } finally {
+            tx.close();
+        }
+    }
+
+    @Override
+    public void searchByRelationshipType(String relationshipType, EdgeQueryListener listener, int maxResults) {
+        Transaction tx = null;
+        try {
+            tx = graphDB.beginTx();
+
+            String query = "MATCH ()-[r:" + sanitizeLabel(relationshipType) + "]->() RETURN r LIMIT " + maxResults;
+            Result result = tx.execute(query);
+
+            int count = 0;
+            while (result.hasNext() && count < maxResults) {
+                Map<String, Object> map = result.next();
+                Relationship rel = (Relationship) map.get("r");
+                if (!listener.edgeFound(rel)) {
+                    break;
+                }
+                count++;
+            }
+
+            tx.commit();
+        } finally {
+            tx.close();
+        }
+    }
+
+    /**
+     * Sanitize a label/type name for use in Cypher queries.
+     */
+    private String sanitizeLabel(String label) {
+        // Remove any characters that could be used for injection
+        return label.replaceAll("[^a-zA-Z0-9_]", "_");
+    }
+
+    @Override
     public void findLinks(ExportLinksQuery query, LinkQueryListener listener) {
         Transaction tx = null;
         try {

@@ -240,6 +240,19 @@ public class MultiBitmapBookmarks implements Serializable, IMultiBookmarks {
         return ret;
     }
 
+    public Map<Integer, Integer> getBookmarkCountBySource(String bookmarkName) {
+        Map<Integer, Integer> counts = new HashMap<>();
+        for (Entry<Integer, IBookmarks> entry : map.entrySet()) {
+            int sourceId = entry.getKey();
+            IBookmarks bookmarks = entry.getValue();
+            int bookmarkId = bookmarks.getBookmarkId(bookmarkName);
+            if (bookmarkId != -1) {
+                counts.put(sourceId, bookmarks.getBookmarkCount(bookmarkId));
+            }
+        }
+        return counts;
+    }
+
     public void setInReport(String bookmarkName, boolean inReport) {
         for (IBookmarks m : map.values()) {
             int bookmarkId = m.getBookmarkId(bookmarkName);

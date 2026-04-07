@@ -3,13 +3,12 @@ package iped.engine.webapi.json;
 import java.util.Arrays;
 import java.util.List;
 
-import io.swagger.annotations.ApiModel;
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * DataListModel puts an array in a "data" property: { "data": [] }
  */
-@ApiModel(value = "DataList")
+@Schema(name = "DataList")
 public class DataListJSON<T> {
     private List<T> IDs;
 
@@ -21,7 +20,7 @@ public class DataListJSON<T> {
         this.IDs = IDs;
     }
 
-    @ApiModelProperty()
+    @Schema
     public List<T> getData() {
         return this.IDs;
     }

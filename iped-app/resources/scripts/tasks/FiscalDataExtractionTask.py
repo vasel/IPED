@@ -85,7 +85,19 @@ class FiscalDataExtractionTask:
         try:
             if text.strip().startswith("[{"):
                 
-                json_items = json.loads(text)
+                # Handle multi-page PDFs where multiple JSON arrays are concatenated.
+                # Use JSONDecoder to parse only the first valid JSON array.
+                decoder = json.JSONDecoder()
+                stripped = text.strip()
+                json_items, end_idx = decoder.raw_decode(stripped)
+                
+                # If there are more JSON arrays, merge them
+                remaining = stripped[end_idx:].strip()
+                while remaining.startswith("[{"):
+                    extra_items, end_idx = decoder.raw_decode(remaining)
+                    json_items.extend(extra_items)
+                    remaining = remaining[end_idx:].strip()
+                
                 # Reconstruct text for regex compatibility
                 # Add spaces between items on same line, newlines for different lines (approx)
                 text = self._reconstruct_text_from_json(json_items)
@@ -103,7 +115,7 @@ class FiscalDataExtractionTask:
                     self._populate_metadata(item, data)
                     return
         except Exception as e:
-            print("DEBUG_FISCAL_ERROR: " + str(e))
+            # JSON parsing failed — fall through to plain-text extraction below
             pass
             
         doc_type = self._detect_doc_type(text)

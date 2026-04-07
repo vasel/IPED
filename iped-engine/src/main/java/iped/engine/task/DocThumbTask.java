@@ -117,17 +117,14 @@ public class DocThumbTask extends ThumbTask {
             }
         }
         if (docThumbsConfig.isEnabled() && docThumbsConfig.isLoEnabled()) {
-            loOutDir = Files.createTempDirectory("doc-thumb").toFile();
-            loOutPath = loOutDir.getAbsolutePath().replace('\\', '/');
-            if (System.getProperty("os.name").toLowerCase().contains("windows")) {
-                loOutPath = '/' + loOutPath;
-            }
+                loOutDir = Files.createTempDirectory("doc-thumb").toFile();
+                loOutPath = toLibreOfficeFileUri(loOutDir);
             String[] cmd = {loPath + "/program/soffice.bin",
                     "--headless",
                     "--quickstart",
                     "--norestore",
                     "--nolockcheck",
-                    "-env:UserInstallation=file://" + loOutPath};
+                    "-env:UserInstallation=" + loOutPath};
             ProcessBuilder pb = new ProcessBuilder(cmd);
             loEnvCreateProcess = pb.start();
             pb.redirectErrorStream();
@@ -407,7 +404,7 @@ public class DocThumbTask extends ThumbTask {
             cmd.add("--quickstart");
             cmd.add("--norestore");
             cmd.add("--nolockcheck");
-            cmd.add("-env:UserInstallation=file://" + loOutPath);
+            cmd.add("-env:UserInstallation=" + loOutPath);
             cmd.add("--outdir");
             cmd.add(loOutDir.getAbsolutePath());
             ProcessBuilder pb = new ProcessBuilder(cmd.toArray(new String[0]));
@@ -511,7 +508,7 @@ public class DocThumbTask extends ThumbTask {
                             out.newLine();
                             out.write("<item oor:path=\"/org.openoffice.Office.Common/Path/Info\"><prop oor:name=\"WorkPathChanged\" oor:op=\"fuse\"><value>false</value></prop></item>");
                             out.newLine();
-                            out.write("<item oor:path=\"/org.openoffice.Office.Paths/Paths/org.openoffice.Office.Paths:NamedPath['Temp']\"><prop oor:name=\"WritePath\" oor:op=\"fuse\"><value>file://"
+                                out.write("<item oor:path=\"/org.openoffice.Office.Paths/Paths/org.openoffice.Office.Paths:NamedPath['Temp']\"><prop oor:name=\"WritePath\" oor:op=\"fuse\"><value>"
                                     + loOutPath + "</value></prop></item>");
                             out.newLine();
                         }
@@ -523,5 +520,14 @@ public class DocThumbTask extends ThumbTask {
         } catch (Exception e) {
             logger.warn("Error setting LibreOffice temp directory!", e);
         }
+    }
+
+    private static String toLibreOfficeFileUri(File dir) {
+        String uri = dir.toURI().toASCIIString();
+        if (System.getProperty("os.name").toLowerCase().contains("windows")
+                && uri.startsWith("file:/") && !uri.startsWith("file:///")) {
+            return "file:///" + uri.substring("file:/".length());
+        }
+        return uri;
     }
 }

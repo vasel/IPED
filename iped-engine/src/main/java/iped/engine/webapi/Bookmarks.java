@@ -3,6 +3,7 @@ package iped.engine.webapi;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import javax.ws.rs.Consumes;
@@ -16,55 +17,90 @@ import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
 
-import io.swagger.annotations.Api;
-import io.swagger.annotations.ApiOperation;
-import io.swagger.annotations.ApiParam;
+import org.roaringbitmap.RoaringBitmap;
+
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.data.IItemId;
 import iped.data.IMultiBookmarks;
 import iped.engine.data.ItemId;
 import iped.engine.data.ItemIdSet;
+import iped.engine.data.MultiBitmapBookmarks;
 import iped.engine.search.IPEDSearcher;
+import iped.engine.webapi.SearchStats;
+import iped.engine.webapi.json.BookmarkCountJSON;
 import iped.engine.webapi.json.DataListJSON;
 import iped.engine.webapi.json.DocIDJSON;
 import iped.engine.webapi.json.SourceToIDsJSON;
 import iped.search.IMultiSearchResult;
 
-@Api(value = "Bookmarks")
+@Tag(name = "Bookmarks")
 @Path("bookmarks")
 public class Bookmarks {
 
-    @ApiOperation(value = "List bookmarks")
+    @Operation(summary = "List bookmarks")
     @GET
     @Produces(MediaType.APPLICATION_JSON)
-    public DataListJSON<String> getAll() {
+    public DataListJSON<BookmarkCountJSON> getAll() {
         Set<String> bookmarks = Sources.multiSource.getMultiBookmarks().getBookmarkSet();
-        String[] IDs = bookmarks.toArray(new String[0]);
-        return new DataListJSON<String>(IDs);
+        SearchStats stats = Sources.getSearchStats();
+        List<BookmarkCountJSON> data = new ArrayList<>();
+
+        for (String name : bookmarks) {
+            int total = (stats != null && stats.getBookmarkTotals().containsKey(name))
+                    ? stats.getBookmarkTotals().get(name)
+                    : Sources.multiSource.getMultiBookmarks().getBookmarkCount(name);
+            Map<String, Integer> perSource = (stats != null) ? stats.getSourceBookmarkCounts().entrySet().stream()
+                    .filter(e -> e.getValue().containsKey(name))
+                    .collect(java.util.stream.Collectors.toMap(Map.Entry::getKey,
+                            e -> e.getValue().get(name))) : null;
+            data.add(new BookmarkCountJSON(name, total, perSource));
+        }
+
+        return new DataListJSON<BookmarkCountJSON>(data);
     }
 
-    @ApiOperation(value = "List bookmark documents")
+    @Operation(summary = "List bookmark documents")
     @GET
     @Path("{bookmark}")
     @Produces(MediaType.APPLICATION_JSON)
     public SourceToIDsJSON get(@PathParam("bookmark") String bookmark) throws Exception {
-
-        IPEDSearcher searcher = new IPEDSearcher(Sources.multiSource, "");
-        IMultiSearchResult result = searcher.multiSearch();
-        result = Sources.multiSource.getMultiBookmarks().filterBookmarks(result, Collections.singleton(bookmark));
-
+        // Directly iterate the RoaringBitmap for the bookmark instead of doing
+        // a full index search + filter. The bitmap already contains all item IDs
+        // for the bookmark, indexed by sourceId.
+        IMultiBookmarks mm = Sources.multiSource.getMultiBookmarks();
         List<DocIDJSON> docs = new ArrayList<DocIDJSON>();
-        for (IItemId id : result.getIterator()) {
-            docs.add(new DocIDJSON(Sources.sourceIntToString.get(id.getSourceId()), id.getId()));
+
+        if (mm instanceof MultiBitmapBookmarks) {
+            RoaringBitmap[] unions = ((MultiBitmapBookmarks) mm)
+                    .getBookmarksUnions(Collections.singleton(bookmark));
+            for (int sourceId = 0; sourceId < unions.length; sourceId++) {
+                RoaringBitmap bitmap = unions[sourceId];
+                if (bitmap == null || bitmap.isEmpty()) continue;
+                String sourceName = Sources.sourceIntToString.get(sourceId);
+                for (int itemId : bitmap) {
+                    docs.add(new DocIDJSON(sourceName, itemId));
+                }
+            }
+        } else {
+            // Fallback for non-bitmap bookmarks
+            IPEDSearcher searcher = new IPEDSearcher(Sources.multiSource, "");
+            IMultiSearchResult result = searcher.multiSearch();
+            result = mm.filterBookmarks(result, Collections.singleton(bookmark));
+            for (IItemId id : result.getIterator()) {
+                docs.add(new DocIDJSON(Sources.sourceIntToString.get(id.getSourceId()), id.getId()));
+            }
         }
 
         return new SourceToIDsJSON(docs);
     }
 
-    @ApiOperation(value = "Add documents to bookmark")
+    @Operation(summary = "Add documents to bookmark")
     @PUT
     @Path("{bookmark}/add")
     @Consumes(MediaType.APPLICATION_JSON)
-    public Response insertLabel(@PathParam("bookmark") String bookmark, @ApiParam(required = true) DocIDJSON[] docs) {
+    public Response insertLabel(@PathParam("bookmark") String bookmark, @Parameter(required = true) DocIDJSON[] docs) {
         IMultiBookmarks mm = Sources.multiSource.getMultiBookmarks();
         ItemIdSet itemIds = new ItemIdSet();
         for (DocIDJSON d : docs) {
@@ -72,14 +108,15 @@ public class Bookmarks {
         }
         mm.addBookmark(itemIds, bookmark);
         mm.saveState();
+        SearchResultCache.invalidateAll();
         return Response.ok().build();
     }
 
-    @ApiOperation(value = "Remove documents from bookmark")
+    @Operation(summary = "Remove documents from bookmark")
     @PUT
     @Path("{bookmark}/remove")
     @Consumes(MediaType.APPLICATION_JSON)
-    public Response removeLabel(@PathParam("bookmark") String bookmark, @ApiParam(required = true) DocIDJSON[] docs) {
+    public Response removeLabel(@PathParam("bookmark") String bookmark, @Parameter(required = true) DocIDJSON[] docs) {
         IMultiBookmarks mm = Sources.multiSource.getMultiBookmarks();
         ItemIdSet itemIds = new ItemIdSet();
         for (DocIDJSON d : docs) {
@@ -87,36 +124,40 @@ public class Bookmarks {
         }
         mm.removeBookmark(itemIds, bookmark);
         mm.saveState();
+        SearchResultCache.invalidateAll();
         return Response.ok().build();
     }
 
-    @ApiOperation(value = "Create bookmark")
+    @Operation(summary = "Create bookmark")
     @POST
     @Path("{bookmark}")
     public Response addLabel(@PathParam("bookmark") String bookmark) {
         IMultiBookmarks mm = Sources.multiSource.getMultiBookmarks();
         mm.newBookmark(bookmark);
         mm.saveState();
+        SearchResultCache.invalidateAll();
         return Response.ok().build();
     }
 
-    @ApiOperation(value = "Delete bookmark")
+    @Operation(summary = "Delete bookmark")
     @DELETE
     @Path("{bookmark}")
     public Response delLabel(@PathParam("bookmark") String bookmark) {
         IMultiBookmarks mm = Sources.multiSource.getMultiBookmarks();
         mm.delBookmark(bookmark);
         mm.saveState();
+        SearchResultCache.invalidateAll();
         return Response.ok().build();
     }
 
-    @ApiOperation(value = "Rename bookmark")
+    @Operation(summary = "Rename bookmark")
     @PUT
     @Path("{old}/rename/{new}")
     public Response changeLabel(@PathParam("old") String oldLabel, @PathParam("new") String newLabel) {
         IMultiBookmarks mm = Sources.multiSource.getMultiBookmarks();
         mm.renameBookmark(oldLabel, newLabel);
         mm.saveState();
+        SearchResultCache.invalidateAll();
         return Response.ok().build();
     }
 

@@ -18,9 +18,14 @@
  */
 package iped.engine.data;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.lang.reflect.Constructor;
+import java.net.URI;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.BitSet;
 import java.util.Collections;
@@ -43,10 +48,14 @@ import org.apache.lucene.index.IndexWriter;
 import org.apache.lucene.index.LeafReader;
 import org.apache.lucene.index.NumericDocValues;
 import org.apache.lucene.index.SortedDocValues;
+import org.apache.lucene.index.Term;
 import org.apache.lucene.index.Terms;
 import org.apache.lucene.index.TermsEnum;
 import org.apache.lucene.search.DocIdSetIterator;
 import org.apache.lucene.search.IndexSearcher;
+import org.apache.lucene.search.ScoreDoc;
+import org.apache.lucene.search.TermQuery;
+import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.Directory;
 import org.apache.lucene.util.Bits;
 import org.sleuthkit.datamodel.SleuthkitCase;
@@ -72,12 +81,14 @@ import iped.engine.search.IPEDSearcher;
 import iped.engine.search.IndexerSimilarity;
 import iped.engine.sleuthkit.SleuthkitInputStreamFactory;
 import iped.engine.sleuthkit.TouchSleuthkitImages;
+import iped.engine.task.MinIOTask.MinIOInputInputStreamFactory;
 import iped.engine.task.index.IndexItem;
 import iped.engine.task.index.IndexTask;
 import iped.engine.util.Util;
 import iped.exception.IPEDException;
 import iped.properties.BasicProps;
 import iped.utils.IOUtil;
+import iped.utils.SeekableInputStreamFactory;
 import iped.utils.SelectImagePathWithDialog;
 
 public class IPEDSource implements IIPEDSource {
@@ -96,6 +107,8 @@ public class IPEDSource implements IIPEDSource {
      * para FS_INFO
      */
     private static List<SleuthkitCase> tskCaseList = Collections.synchronizedList(new ArrayList<SleuthkitCase>());
+
+    private static volatile boolean useConsoleForMissingImages = false;
 
     private File casePath;
     private File moduleDir;
@@ -152,6 +165,10 @@ public class IPEDSource implements IIPEDSource {
         File prevTempInfoFile = getTempDirInfoFile(moduleDir);
         String prevTemp = new String(Files.readAllBytes(prevTempInfoFile.toPath()), "UTF-8");
         return new File(prevTemp, INDEX_DIR);
+    }
+
+    public static void setUseConsoleForMissingImages(boolean enabled) {
+        useConsoleForMissingImages = enabled;
     }
 
     public IPEDSource(File casePath) {
@@ -559,6 +576,69 @@ public class IPEDSource implements IIPEDSource {
         }
     }
 
+    public void precheckDataSources() {
+        if (atomicReader == null || searcher == null) {
+            return;
+        }
+        try {
+            Terms terms = atomicReader.terms(IndexItem.SOURCE_PATH);
+            if (terms == null) {
+                return;
+            }
+            TermsEnum termsEnum = terms.iterator();
+            while (termsEnum.next() != null) {
+                String sourcePath = termsEnum.term().utf8ToString();
+                String className = findDecoderForSourcePath(sourcePath);
+                if (className == null) {
+                    continue;
+                }
+                String resolvedPath = resolveDataSourcePath(sourcePath, className);
+                SeekableInputStreamFactory sisf = createInputStreamFactory(className, resolvedPath);
+                if (!isReport && sisf.checkIfDataSourceExists()) {
+                    IndexItem.checkIfExistsAndAsk(sisf, moduleDir);
+                }
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Error prechecking data sources", e);
+        }
+    }
+
+    private String findDecoderForSourcePath(String sourcePath) throws IOException {
+        TopDocs docsFound = searcher.search(new TermQuery(new Term(IndexItem.SOURCE_PATH, sourcePath)), 1);
+        if (docsFound.scoreDocs == null || docsFound.scoreDocs.length == 0) {
+            return null;
+        }
+        ScoreDoc scoreDoc = docsFound.scoreDocs[0];
+        Set<String> fields = Collections.singleton(IndexItem.SOURCE_DECODER);
+        Document doc = searcher.doc(scoreDoc.doc, fields);
+        return doc.get(IndexItem.SOURCE_DECODER);
+    }
+
+    private String resolveDataSourcePath(String sourcePath, String className) {
+        if (SleuthkitInputStreamFactory.class.getName().equals(className)) {
+            if (sleuthCase != null) {
+                return sleuthCase.getDbDirPath() + File.separatorChar + sleuthCase.getDatabaseName();
+            }
+            return sourcePath;
+        }
+        if (!MinIOInputInputStreamFactory.class.getName().equals(className)) {
+            return Util.getResolvedFile(moduleDir.getParent(), sourcePath).toString();
+        }
+        return sourcePath;
+    }
+
+    @SuppressWarnings("unchecked")
+    private SeekableInputStreamFactory createInputStreamFactory(String className, String sourcePath) throws Exception {
+        Class<SeekableInputStreamFactory> clazz = (Class<SeekableInputStreamFactory>) Class.forName(className);
+        try {
+            Constructor<SeekableInputStreamFactory> c = clazz.getConstructor(Path.class);
+            return c.newInstance(Path.of(sourcePath));
+        } catch (NoSuchMethodException e) {
+            Constructor<SeekableInputStreamFactory> c = clazz.getConstructor(URI.class);
+            return c.newInstance(URI.create(sourcePath));
+        }
+    }
+
     /**
      * Substitui caminhos absolutos para imagens por relativos
      * 
@@ -663,8 +743,13 @@ public class IPEDSource implements IIPEDSource {
     }
 
     private void askNewImagePath(long imgId, List<String> paths, File sleuthFile) throws TskCoreException, IOException {
-        SelectImagePathWithDialog sip = new SelectImagePathWithDialog(new File(paths.get(0)));
-        File newImage = sip.askImagePathInGUI();
+        File newImage;
+        if (useConsoleForMissingImages) {
+            newImage = askImagePathInConsole(paths);
+        } else {
+            SelectImagePathWithDialog sip = new SelectImagePathWithDialog(new File(paths.get(0)));
+            newImage = sip.askImagePathInGUI();
+        }
 
         ArrayList<String> newPaths = new ArrayList<String>();
         if (paths.size() == 1) {
@@ -679,6 +764,35 @@ public class IPEDSource implements IIPEDSource {
             }
         testCanWriteToCase(sleuthFile);
         sleuthCase.setImagePaths(imgId, newPaths);
+    }
+
+    private File askImagePathInConsole(List<String> paths) throws IOException {
+        BufferedReader reader = new BufferedReader(new InputStreamReader(System.in));
+        String example = paths.get(0);
+        String prompt;
+        if (paths.size() > 1) {
+            prompt = "Missing image fragments. Enter full path to first fragment: ";
+        } else {
+            prompt = "Missing image. Enter new full path: ";
+        }
+
+        while (true) {
+            System.out.println("Missing image path: " + example);
+            System.out.print(prompt);
+            String line = reader.readLine();
+            if (line == null) {
+                throw new IOException("Image path not provided");
+            }
+            String trimmed = line.trim();
+            if (trimmed.isEmpty()) {
+                throw new IOException("Image path not provided");
+            }
+            File candidate = new File(trimmed);
+            if (candidate.exists()) {
+                return candidate;
+            }
+            System.out.println("Path not found: " + trimmed);
+        }
     }
 
     public String getItemProperty(int id, String propertyName) {

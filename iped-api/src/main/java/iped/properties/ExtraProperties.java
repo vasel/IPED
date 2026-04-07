@@ -205,20 +205,25 @@ public class ExtraProperties {
         public static final String FISCAL_REMET_NAME = "fiscal:remetName";
         public static final String FISCAL_REMET_CITY = "fiscal:remetCity";
         public static final String FISCAL_REMET_UF = "fiscal:remetUf";
-
         public static final String FISCAL_DEST_CNPJ = "fiscal:destCnpj";
         public static final String FISCAL_DEST_NAME = "fiscal:destName";
         public static final String FISCAL_DEST_CITY = "fiscal:destCity";
         public static final String FISCAL_DEST_UF = "fiscal:destUf";
-
         public static final String FISCAL_VALUE = "fiscal:value";
         public static final String FISCAL_ICMS = "fiscal:icms";
 
+        public static final String HASHDB_PREFIX = "hashDb:";
+        public static final String STATUS_PROPERTY = "status";
+        public static final String SET_PROPERTY = "set";
+        public static final String HASHDB_STATUS = HASHDB_PREFIX + STATUS_PROPERTY;
+        public static final String HASHDB_SET = HASHDB_PREFIX + SET_PROPERTY;
+        
         /**
          * Property to be set if the evidence is a animated image (i.e. contain multiple
          * frames). Only set if the number of frames is greater than one.
          */
         public static final String ANIMATION_FRAMES_PROP = IMAGE_META_PREFIX + "AnimationFrames";
+
 
         public static final List<String> COMMUNICATION_BASIC_PROPS = Arrays.asList(MESSAGE_SUBJECT, MESSAGE_BODY,
                         Message.MESSAGE_CC, Message.MESSAGE_BCC, Message.MESSAGE_RECIPIENT_ADDRESS,

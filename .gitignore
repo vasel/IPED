@@ -7,3 +7,5 @@ nbactions.xml
 /.idea/
 /exemplos
 /.vscode
+iped-app/pom.xml
+build_output.txt

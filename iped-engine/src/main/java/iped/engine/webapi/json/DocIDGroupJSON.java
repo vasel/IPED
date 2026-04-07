@@ -2,7 +2,7 @@ package iped.engine.webapi.json;
 
 import java.util.List;
 
-import io.swagger.annotations.ApiModelProperty;
+import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
  * DocIDGroupModel lists IDs of a single source: { "source": "A", "ids":[0,1,2]
@@ -20,7 +20,7 @@ public class DocIDGroupJSON {
         this.ids = ids;
     }
 
-    @ApiModelProperty
+    @Schema
     public String getSource() {
         return source;
     }
@@ -29,7 +29,7 @@ public class DocIDGroupJSON {
         this.source = source;
     }
 
-    @ApiModelProperty
+    @Schema
     public List<Integer> getIds() {
         return ids;
     }
