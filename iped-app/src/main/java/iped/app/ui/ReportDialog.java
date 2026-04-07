@@ -68,6 +68,7 @@ public class ReportDialog implements ActionListener, TableModelListener {
     JButton generate = new JButton(Messages.getString("ReportDialog.Create")); //$NON-NLS-1$
     JCheckBox noAttachs = new JCheckBox(Messages.getString("ReportDialog.NoAttachments")); //$NON-NLS-1$
     JCheckBox noLinkedItems = new JCheckBox(Messages.getString("ReportDialog.noLinkedItems")); //$NON-NLS-1$
+    JCheckBox pdfReport = new JCheckBox(Messages.getString("ReportDialog.pdfReport")); //$NON-NLS-1$
     JCheckBox append = new JCheckBox(Messages.getString("ReportDialog.AddToReport")); //$NON-NLS-1$
     JCheckBox selectAll = new JCheckBox();
 
@@ -114,6 +115,7 @@ public class ReportDialog implements ActionListener, TableModelListener {
         Box footer = Box.createVerticalBox();
         footer.add(noAttachs);
         footer.add(noLinkedItems);
+        footer.add(pdfReport);
         footer.add(footer1);
         footer.add(append);
         footer.add(footer3);
@@ -257,8 +259,10 @@ public class ReportDialog implements ActionListener, TableModelListener {
         }
 
         if (e.getSource() == generate) {
-            if (isInputOK())
+            if (isInputOK()){
+                generate.setEnabled(false);
                 generateReport();
+            }
         }
 
         if (e.getSource() == selectAll) {
@@ -287,6 +291,7 @@ public class ReportDialog implements ActionListener, TableModelListener {
             e1.printStackTrace();
             JOptionPane.showMessageDialog(null, Messages.getString("ReportDialog.ReportError"), //$NON-NLS-1$
                     Messages.getString("ReportDialog.ErrorTitle"), JOptionPane.ERROR_MESSAGE); //$NON-NLS-1$
+            generate.setEnabled(true);
             return;
         }
         String keywords = this.keywords.getText().trim();
@@ -323,6 +328,9 @@ public class ReportDialog implements ActionListener, TableModelListener {
             if (noLinkedItems.isSelected())
                 cmd.add(CmdLineArgsImpl.noLinkedItemsOption); // $NON-NLS-1$
 
+            if (pdfReport.isSelected())
+                cmd.add(CmdLineArgsImpl.pdfReportOption); // $NON-NLS-1$
+
             if (append.isSelected())
                 cmd.add("--append"); //$NON-NLS-1$
 
@@ -341,6 +349,7 @@ public class ReportDialog implements ActionListener, TableModelListener {
 
         } catch (Exception e) {
             e.printStackTrace();
+            generate.setEnabled(true);
         }
     }
 
@@ -365,6 +374,8 @@ public class ReportDialog implements ActionListener, TableModelListener {
 
                 } catch (Exception e) {
                     e.printStackTrace();
+                }finally{
+                    generate.setEnabled(true);
                 }
             }
         }.start();
