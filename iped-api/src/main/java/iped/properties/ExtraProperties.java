@@ -211,12 +211,6 @@ public class ExtraProperties {
         public static final String FISCAL_DEST_UF = "fiscal:destUf";
         public static final String FISCAL_VALUE = "fiscal:value";
         public static final String FISCAL_ICMS = "fiscal:icms";
-
-        public static final String HASHDB_PREFIX = "hashDb:";
-        public static final String STATUS_PROPERTY = "status";
-        public static final String SET_PROPERTY = "set";
-        public static final String HASHDB_STATUS = HASHDB_PREFIX + STATUS_PROPERTY;
-        public static final String HASHDB_SET = HASHDB_PREFIX + SET_PROPERTY;
         
         /**
          * Property to be set if the evidence is a animated image (i.e. contain multiple
