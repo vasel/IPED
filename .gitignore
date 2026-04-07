@@ -8,3 +8,4 @@ nbactions.xml
 /exemplos
 /.vscode
 iped-app/pom.xml
+build_output.txt

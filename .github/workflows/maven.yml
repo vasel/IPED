@@ -1,7 +1,7 @@
 name: Java CI
 on:
   push:
-    branches: [master]
+    branches: [sefmg-custom]
 
 jobs:
   build-java11:
