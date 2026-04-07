@@ -5,6 +5,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.PrintStream;
 import java.net.MalformedURLException;
+import java.nio.file.Files;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 
@@ -36,8 +37,9 @@ public class LogConfiguration {
             if (logFile == null) {
                 String name = "IPED-" + df.format(new Date()) + ".log";
                 logFile = new File(rootPath + "/log", name);
-                logFile.getParentFile().mkdirs();
-                if (!IOUtil.canCreateFile(logFile.getParentFile())) {
+                try {
+                    Files.createFile(logFile.toPath());
+                } catch (IOException e) {
                     logFile = new File(System.getProperty("java.io.tmpdir"), name);
                 }
             }

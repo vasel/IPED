@@ -191,6 +191,12 @@ public class ExtraProperties {
 
         public static final String FACE_AGE_LABELS = "faceAge:labels";
 
+        public static final String HASHDB_PREFIX = "hashDb:";
+        public static final String STATUS_PROPERTY = "status";
+        public static final String SET_PROPERTY = "set";
+        public static final String HASHDB_STATUS = HASHDB_PREFIX + STATUS_PROPERTY;
+        public static final String HASHDB_SET = HASHDB_PREFIX + SET_PROPERTY;
+    
         // Fiscal Properties (NFe/CTe)
         public static final String IS_NFE = "isNfe";
         public static final String IS_CTE = "isCte";

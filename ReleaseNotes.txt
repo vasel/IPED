@@ -18,6 +18,7 @@
 #2834: Report generation fails due to inconsistency of data type for field html:image:og:image:height (@wladimirleite, @lfcnassif)
 #2824: Fix AD1Extractor.close() to close all channels on failure (@iamsanjaymalakar)
 
+
 31/12/2025: IPED-4.3.0
 News:
 #2438: Adds a new remote task to classify CSAM images, depends on proprietary service/model (@joaomacedo, @hauck-jvsh, @marcosammoura, @wladimirleite)

@@ -763,7 +763,7 @@ public abstract class ExtractorIOS extends Extractor {
             decodeReceiptInfo(m, receiptInfo);
         }
         int forwardedMask = 0b1_1000_0000; // 8th and 9th bits
-        m.setForwarded((rs.getLong("zflags") & forwardedMask) == forwardedMask);        
+        m.setForwarded((rs.getLong("zflags") & forwardedMask) == forwardedMask);
 
         byte[] metadata = null;
         if (hasZSTANZAIDAndZMETADATAColumns) {
