@@ -74,7 +74,6 @@
 					</execution>
 				</executions>
 				<configuration>
-				<skip>true</skip>
 					<url>https://github.com/sepinf-inc/RegRipper3.0/archive/refs/tags/3.0-p3.zip</url>
 					<unpack>true</unpack>
 					<fileMappers>
