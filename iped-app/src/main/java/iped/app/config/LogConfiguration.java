@@ -37,9 +37,8 @@ public class LogConfiguration {
             if (logFile == null) {
                 String name = "IPED-" + df.format(new Date()) + ".log";
                 logFile = new File(rootPath + "/log", name);
-                try {
-                    Files.createFile(logFile.toPath());
-                } catch (IOException e) {
+                logFile.getParentFile().mkdirs();
+                if (!IOUtil.canCreateFile(logFile.getParentFile())) {
                     logFile = new File(System.getProperty("java.io.tmpdir"), name);
                 }
             }
