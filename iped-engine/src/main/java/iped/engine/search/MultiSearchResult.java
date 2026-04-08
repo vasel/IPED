@@ -197,8 +197,13 @@ public class MultiSearchResult implements IMultiSearchResult {
             this.ipedSource = ipedSource;
             this.docids = new RoaringBitmap();
             for (int i = 0; i < ids.length; i++) {
+                if (ids[i].getId() < 0) {
+                    continue;
+                }
                 int lucId = ipedSource.getLuceneId(ids[i]);
-                docids.add(lucId);
+                if (lucId >= 0) {
+                    docids.add(lucId);
+                }
             }
         }
     }
