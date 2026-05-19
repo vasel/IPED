@@ -29,6 +29,9 @@ import iped.data.IIPEDSource;
 import iped.data.IItemId;
 import iped.engine.data.IPEDSource;
 import iped.engine.search.IPEDSearcher;
+import iped.engine.search.QueryBuilder;
+import iped.exception.ParseException;
+import iped.exception.QueryNodeException;
 import iped.engine.search.IPEDSearcher.SearchAfterMultiResult;
 import iped.engine.search.IPEDSearcher.SearchAfterResult;
 import iped.engine.webapi.json.DocIDJSON;
@@ -109,6 +112,18 @@ public class Search {
 
         boolean isMatchAll = q != null && "*".equals(q.trim());
         String categoryOnly = extractCategoryOnly(q);
+
+        // Validate query syntax early to avoid spawning expensive failed searches
+        if (!isMatchAll && categoryOnly == null && !escapeq.trim().isEmpty()) {
+            try {
+                new QueryBuilder(Sources.multiSource).getQuery(escapeq);
+            } catch (ParseException | QueryNodeException e) {
+                return Response.status(Response.Status.BAD_REQUEST)
+                        .entity("{\"error\":\"Invalid query syntax: " + e.getMessage().replace("\"", "'") + "\"}")
+                        .type(MediaType.APPLICATION_JSON)
+                        .build();
+            }
+        }
 
         Sort sort = null;
         if (sortField != null && !sortField.trim().isEmpty()) {
