@@ -51,7 +51,7 @@ public class Docs {
             // Se o filtro for nulo, evitamos carregar campos gigantes (ex: 'content') para não gerar gargalos de I/O em batch
             DocumentStoredFieldVisitor visitor = new DocumentStoredFieldVisitor() {
                 @Override
-                public StoredFieldVisitor.Status needsField(FieldInfo fieldInfo) {
+                public StoredFieldVisitor.Status needsField(FieldInfo fieldInfo) throws IOException {
                     if ("content".equals(fieldInfo.name)) {
                         return StoredFieldVisitor.Status.NO;
                     }
