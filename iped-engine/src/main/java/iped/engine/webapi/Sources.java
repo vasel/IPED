@@ -98,12 +98,35 @@ public class Sources {
                 confInited = true;
             }
 
+            File sleuthDb = new File(file, "sleuth.db");
+            if (sleuthDb.exists() && (!sleuthDb.canWrite() || !file.canWrite())) {
+                LOGGER.warn("[{}/{}] ATENÇÃO: A pasta do caso ou o arquivo sleuth.db em '{}' estão como somente-leitura. " +
+                            "Dependendo da sua versão, o IPED precisará copiar o banco de dados inteiro para a pasta temporária " +
+                            "para conseguir abri-lo, causando grande lentidão na carga. Recomendamos conceder permissão de ESCRITA na pasta.", 
+                            srcIndex, totalSources, file.getAbsolutePath());
+            }
+
             LOGGER.info("[{}/{}] Opening source '{}' at {}...", srcIndex, totalSources, id, file);
             long srcStart = System.currentTimeMillis();
             IPEDSource source = new IPEDSource(file);
             long srcElapsed = System.currentTimeMillis() - srcStart;
-            LOGGER.info("[{}/{}] Source '{}' loaded ({} items, {}ms)", srcIndex, totalSources, id,
+
+            File indexDir = source.getIndex();
+            String indexDirStr = indexDir != null ? indexDir.getAbsolutePath() : "Desconhecido";
+            double indexSizeMB = indexDir != null ? getFolderSize(indexDir) / (1024.0 * 1024.0) : 0.0;
+
+            LOGGER.info("[{}/{}] Source '{}' loaded (Índice: {}, Tamanho do Índice: {} MB, Total de Arquivos/Itens: {}, Tempo de carregamento: {} ms)", 
+                    srcIndex, totalSources, id, indexDirStr, String.format(java.util.Locale.US, "%.2f", indexSizeMB), 
                     source.getTotalItems(), srcElapsed);
+
+            if (srcElapsed > 10000) {
+                LOGGER.warn("[{}/{}] O carregamento do source '{}' está levando bastante tempo ({} ms). " + 
+                            "Isso geralmente ocorre devido à inicialização interna do banco do Sleuthkit " +
+                            "(ex: construção do cache no populateHasChildrenMap), I/O lento do disco, " +
+                            "ou cópia do arquivo sleuth.db caso a pasta original seja somente-leitura. " +
+                            "Para otimizar, certifique-se de usar discos rápidos (SSD) ou habilitar modo de leitura robusta.", 
+                            srcIndex, totalSources, id, srcElapsed);
+            }
 
             if (checkSources) {
                 LOGGER.info("[{}/{}] Checking data sources for '{}'...", srcIndex, totalSources, id);
@@ -422,5 +445,20 @@ public class Sources {
         // Reinitialize with the original sources URL
         init(sourcesUrl, checkSourcesFlag, precomputeStatsFlag, warmupFlag);
         return Response.ok().build();
+    }
+
+    private static long getFolderSize(File folder) {
+        long length = 0;
+        File[] files = folder.listFiles();
+        if (files != null) {
+            for (File file : files) {
+                if (file.isFile()) {
+                    length += file.length();
+                } else {
+                    length += getFolderSize(file);
+                }
+            }
+        }
+        return length;
     }
 }

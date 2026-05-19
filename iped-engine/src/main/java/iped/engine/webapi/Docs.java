@@ -13,7 +13,10 @@ import javax.ws.rs.Produces;
 import javax.ws.rs.core.MediaType;
 
 import org.apache.lucene.document.Document;
+import org.apache.lucene.document.DocumentStoredFieldVisitor;
+import org.apache.lucene.index.FieldInfo;
 import org.apache.lucene.index.IndexableField;
+import org.apache.lucene.index.StoredFieldVisitor;
 
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -42,7 +45,31 @@ public class Docs {
     public static DocPropsJSON buildDocProps(IIPEDSource source, String sourceID, int id, Set<String> fieldsFilter)
             throws IOException {
         int luceneID = source.getLuceneId(id);
-        Document doc = source.getReader().document(luceneID);
+        
+        Document doc;
+        if (fieldsFilter == null || fieldsFilter.isEmpty()) {
+            // Se o filtro for nulo, evitamos carregar campos gigantes (ex: 'content') para não gerar gargalos de I/O em batch
+            DocumentStoredFieldVisitor visitor = new DocumentStoredFieldVisitor() {
+                @Override
+                public StoredFieldVisitor.Status needsField(FieldInfo fieldInfo) {
+                    if ("content".equals(fieldInfo.name)) {
+                        return StoredFieldVisitor.Status.NO;
+                    }
+                    return super.needsField(fieldInfo);
+                }
+            };
+            source.getReader().document(luceneID, visitor);
+            doc = visitor.getDocument();
+        } else {
+            Set<String> normalized = new HashSet<>();
+            for (String f : fieldsFilter) {
+                if (f != null && !f.isBlank()) {
+                    normalized.add(f.trim());
+                }
+            }
+            doc = source.getReader().document(luceneID, normalized);
+            fieldsFilter = normalized;
+        }
 
         DocPropsJSON result = new DocPropsJSON();
         result.setSource(sourceID);
@@ -56,13 +83,7 @@ public class Docs {
                 properties.put(field.name(), values);
             }
         } else {
-            Set<String> normalized = new HashSet<>();
-            for (String f : fieldsFilter) {
-                if (f != null && !f.isBlank()) {
-                    normalized.add(f.trim());
-                }
-            }
-            for (String fieldName : normalized) {
+            for (String fieldName : fieldsFilter) {
                 String[] values = doc.getValues(fieldName);
                 if (values != null && values.length > 0) {
                     properties.put(fieldName, values);

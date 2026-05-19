@@ -13,6 +13,8 @@ import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
@@ -116,31 +118,39 @@ public class DeviceInfo {
         if (Sources.multiSource == null || Sources.sourceIntToString == null) return;
         long start = System.currentTimeMillis();
         int count = 0;
-        for (Map.Entry<Integer, String> entry : Sources.sourceIntToString.entrySet()) {
-            String sourceID = entry.getValue();
-            try {
-                LOGGER.info("Precomputing deviceinfo for source '{}'...", sourceID);
-                long srcStart = System.currentTimeMillis();
-                DeviceInfoJSON info = CompletableFuture
-                        .supplyAsync(() -> {
-                            try {
-                                return computeDeviceInfo(sourceID);
-                            } catch (Exception e) {
-                                throw new RuntimeException(e);
-                            }
-                        })
-                        .get(PRECOMPUTE_TIMEOUT_SECS, TimeUnit.SECONDS);
-                CACHE.put(sourceID, info);
-                long srcElapsed = System.currentTimeMillis() - srcStart;
-                LOGGER.info("Deviceinfo for '{}' precomputed in {}ms", sourceID, srcElapsed);
-                count++;
-            } catch (TimeoutException te) {
-                LOGGER.warn("Precompute deviceinfo for '{}' timed out after {}s – will compute on demand",
-                        sourceID, PRECOMPUTE_TIMEOUT_SECS);
-            } catch (Exception e) {
-                LOGGER.warn("Failed to precompute deviceinfo for '{}': {}", sourceID,
-                        e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+
+        // Utilizamos um Executor próprio ao invés do ForkJoinPool.commonPool() 
+        // para evitar perda de AccessControlContext quando executado com SecurityManager.
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        try {
+            for (Map.Entry<Integer, String> entry : Sources.sourceIntToString.entrySet()) {
+                String sourceID = entry.getValue();
+                try {
+                    LOGGER.info("Precomputing deviceinfo for source '{}'...", sourceID);
+                    long srcStart = System.currentTimeMillis();
+                    DeviceInfoJSON info = CompletableFuture
+                            .supplyAsync(() -> {
+                                try {
+                                    return computeDeviceInfo(sourceID);
+                                } catch (Exception e) {
+                                    throw new RuntimeException(e);
+                                }
+                            }, executor)
+                            .get(PRECOMPUTE_TIMEOUT_SECS, TimeUnit.SECONDS);
+                    CACHE.put(sourceID, info);
+                    long srcElapsed = System.currentTimeMillis() - srcStart;
+                    LOGGER.info("Deviceinfo for '{}' precomputed in {}ms", sourceID, srcElapsed);
+                    count++;
+                } catch (TimeoutException te) {
+                    LOGGER.warn("Precompute deviceinfo for '{}' timed out after {}s – will compute on demand",
+                            sourceID, PRECOMPUTE_TIMEOUT_SECS);
+                } catch (Exception e) {
+                    LOGGER.warn("Failed to precompute deviceinfo for '{}': {}", sourceID,
+                            e.getCause() != null ? e.getCause().getMessage() : e.getMessage());
+                }
             }
+        } finally {
+            executor.shutdownNow();
         }
         long elapsed = System.currentTimeMillis() - start;
         LOGGER.info("Precomputed deviceinfo for {} source(s) in {}ms", count, elapsed);
