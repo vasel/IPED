@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>iped</groupId>
     <artifactId>iped-parent</artifactId>
-    <version>4.3.1</version>
+    <version>4.4.0.2-sefmg</version>
     <packaging>pom</packaging>
     
     <modules>

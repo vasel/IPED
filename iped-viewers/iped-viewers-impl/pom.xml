@@ -5,7 +5,7 @@
 	<parent>
 		<groupId>iped</groupId>
 		<artifactId>iped-viewers</artifactId>
-		<version>4.3.1</version>
+		<version>4.4.0.2-sefmg</version>
 	</parent>
 	<artifactId>iped-viewers-impl</artifactId>
 
