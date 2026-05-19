@@ -6,6 +6,8 @@ import java.util.logging.ConsoleHandler;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
+import org.slf4j.bridge.SLF4JBridgeHandler;
+
 import org.glassfish.grizzly.http.server.HttpServer;
 import org.glassfish.jersey.grizzly2.httpserver.GrizzlyHttpServerFactory;
 import org.glassfish.jersey.server.ResourceConfig;
@@ -35,6 +37,10 @@ public class Main {
      */
             public static HttpServer startServer(String host, int port, String urlToAskSources, boolean enableGraph,
                 boolean checkSources, boolean precomputeStats, boolean warmup) throws Exception {
+        // Route java.util.logging (used by SleuthKit) through SLF4J/Log4j2
+        SLF4JBridgeHandler.removeHandlersForRootLogger();
+        SLF4JBridgeHandler.install();
+
         System.out.println("Configuring JAX-RS resources...");
         // create a resource config that scans for JAX-RS resources and providers
         // in gpinf.api package
