@@ -495,6 +495,8 @@ public class DeviceInfo {
 
         List<String> ips = new ArrayList<>();
 
+        StringBuilder combinedReport = new StringBuilder();
+
         // Parse OS Info reports for ComputerName, ProductName, CurrentVersion etc.
         if (desktopInfo.getOsInfoReports() != null) {
             for (ReportRefJSON report : desktopInfo.getOsInfoReports()) {
@@ -504,6 +506,7 @@ public class DeviceInfo {
                     String html = readItemContent(item);
                     if (html == null) continue;
 
+                    combinedReport.append(extractRegRipperText(html)).append("\n\n");
                     parseRegistryReportFields(html, imageInfo, ips);
                 } catch (Exception e) {
                     LOGGER.warn("Failed to parse OS Info report {}: {}", report.getName(), e.getMessage());
@@ -520,6 +523,7 @@ public class DeviceInfo {
                     String html = readItemContent(item);
                     if (html == null) continue;
 
+                    combinedReport.append(extractRegRipperText(html)).append("\n\n");
                     parseNetworkReportForIPs(html, ips);
                 } catch (Exception e) {
                     LOGGER.warn("Failed to parse Network Info report {}: {}", report.getName(), e.getMessage());
@@ -527,9 +531,71 @@ public class DeviceInfo {
             }
         }
 
+        // Append User Accounts and Storage reports for full parsing in the frontend
+        appendReportsText(source, desktopInfo.getUserReports(), combinedReport);
+        appendReportsText(source, desktopInfo.getStorageInfoReports(), combinedReport);
+
+        if (combinedReport.length() > 0) {
+            desktopInfo.setRawRegistryReport(combinedReport.toString());
+        }
+
         if (!ips.isEmpty()) {
             // Deduplicate preserving order
             imageInfo.setIpAddresses(new ArrayList<>(new LinkedHashSet<>(ips)));
+        }
+    }
+
+    /**
+     * Extracts text from a RegRipper HTML report while preserving structural newlines.
+     */
+    private String extractRegRipperText(String html) {
+        if (html == null) return null;
+        
+        // Convert block tags to newlines to preserve structure
+        String text = html.replaceAll("(?i)<br\\s*/?>", "\n")
+                          .replaceAll("(?i)</?(?:div|p|tr|li|h[1-6])>", "\n")
+                          .replaceAll("(?i)<pre>", "\n")
+                          .replaceAll("(?i)</pre>", "\n");
+        
+        // Strip remaining HTML tags
+        text = text.replaceAll("<[^>]+>", "");
+        
+        // Decode common HTML entities
+        text = text.replace("&nbsp;", " ")
+                   .replace("&lt;", "<")
+                   .replace("&gt;", ">")
+                   .replace("&amp;", "&")
+                   .replace("&quot;", "\"")
+                   .replace("&#39;", "'");
+                   
+        // Collapse horizontal whitespace but preserve newlines
+        text = text.replaceAll("[ \\t\\x0B\\f\\r]+", " ");
+        
+        // Collapse multiple newlines into max 2
+        text = text.replaceAll("\\n{3,}", "\n\n");
+        
+        return text.trim();
+    }
+
+    /**
+     * Reads report contents and appends them to a StringBuilder.
+     */
+    private void appendReportsText(IPEDSource source, List<ReportRefJSON> reports, StringBuilder combinedReport) {
+        if (reports == null) return;
+        for (ReportRefJSON report : reports) {
+            try {
+                IItem item = source.getItemByID(report.getId());
+                if (item == null) continue;
+                String html = readItemContent(item);
+                if (html == null) continue;
+                
+                String text = extractRegRipperText(html);
+                if (text != null && !text.isEmpty()) {
+                    combinedReport.append(text).append("\n\n");
+                }
+            } catch (Exception e) {
+                LOGGER.warn("Failed to append report text for {}: {}", report.getName(), e.getMessage());
+            }
         }
     }
 

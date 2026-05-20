@@ -15,6 +15,8 @@ public class DesktopInfoJSON {
     private List<ReportRefJSON> networkInfoReports;
     private List<ReportRefJSON> storageInfoReports;
 
+    private String rawRegistryReport;
+
     @Schema(description = "OS info report references (Registry OS Info)")
     public List<ReportRefJSON> getOsInfoReports() {
         return osInfoReports;
@@ -49,5 +51,14 @@ public class DesktopInfoJSON {
 
     public void setStorageInfoReports(List<ReportRefJSON> storageInfoReports) {
         this.storageInfoReports = storageInfoReports;
+    }
+
+    @Schema(description = "Raw registry report text for parsing in the frontend")
+    public String getRawRegistryReport() {
+        return rawRegistryReport;
+    }
+
+    public void setRawRegistryReport(String rawRegistryReport) {
+        this.rawRegistryReport = rawRegistryReport;
     }
 }

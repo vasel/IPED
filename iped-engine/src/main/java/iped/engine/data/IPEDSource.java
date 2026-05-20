@@ -255,7 +255,6 @@ public class IPEDSource implements IIPEDSource {
             LOGGER.info("Loading categories...");
             loadLeafCategories();
             loadCategoryTree();
-            buildDescendantsCategories(categoryTree);
 
             LOGGER.info("Loading keywords...");
             loadKeywords();
@@ -398,8 +397,9 @@ public class IPEDSource implements IIPEDSource {
         ArrayList<Category> leafs = getLeafCategories(root);
         leafs.stream().forEach(l -> checkAndAddMissingCategory(root, l));
         filterEmptyCategories(root, leafs);
-        countNumItems(root);
         categoryTree = root;
+        buildDescendantsCategories(root);
+        countNumItems(root);
     }
 
     private void buildDescendantsCategories(Category category) {
