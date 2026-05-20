@@ -220,17 +220,21 @@ public class IPEDSource implements IIPEDSource {
                     if (!SleuthkitReader.isTSKPatched()) {
                         sleuthFile = SleuthkitInputStreamFactory.getWriteableDBFile(sleuthFile);
                     }
+                    LOGGER.info("Opening Sleuthkit database: {}", sleuthFile.getAbsolutePath());
                     sleuthCase = SleuthkitInputStreamFactory.openSleuthkitCase(sleuthFile.getAbsolutePath());
                 }
 
-                if (!isReport)
+                if (!isReport) {
+                    LOGGER.info("Updating image paths to absolute...");
                     updateImagePathsToAbsolute(casePath, sleuthFile);
+                }
 
                 tskCaseList.add(sleuthCase);
             }
 
             AnalysisConfig analysisConfig = ConfigurationManager.get().findObject(AnalysisConfig.class);
             if (analysisConfig.isPreOpenImagesOnSleuth() && iw == null) {
+                LOGGER.info("Pre-opening images on Sleuthkit...");
                 TouchSleuthkitImages.preOpenImagesOnSleuth(sleuthCase, analysisConfig.isOpenImagesCacheWarmUpEnabled(),
                         analysisConfig.getOpenImagesCacheWarmUpThreads());
             }
@@ -243,20 +247,24 @@ public class IPEDSource implements IIPEDSource {
             populateLuceneIdToIdMap();
             invertIdToLuceneIdArray();
             populateEvidenceUUIDs();
+            LOGGER.info("Counting total items...");
             countTotalItems();
 
             SleuthkitReader.loadImagePasswords(moduleDir);
 
+            LOGGER.info("Loading categories...");
             loadLeafCategories();
             loadCategoryTree();
             buildDescendantsCategories(categoryTree);
 
+            LOGGER.info("Loading keywords...");
             loadKeywords();
 
             IndexItem.loadMetadataTypes(new File(moduleDir, "conf")); //$NON-NLS-1$
 
             File extraAttrFile = new File(moduleDir, "data/" + IndexTask.extraAttrFilename); //$NON-NLS-1$
             if (extraAttrFile.exists()) {
+                LOGGER.info("Loading extra attributes...");
                 extraAttributes = (Set<String>) Util.readObject(extraAttrFile.getAbsolutePath());
                 Item.getAllExtraAttributes().addAll(extraAttributes);
             }

@@ -69,9 +69,9 @@ public class Sources {
         checkSourcesFlag = checkSources;
         warmupFlag = warmup;
         precomputeStatsFlag = precomputeStats;
-        sourceIntToString = new HashMap<Integer, String>();
-        sourceStringToInt = new HashMap<String, Integer>();
-        sourcePathToStringID = new HashMap<String, String>();
+        sourceIntToString = new java.util.concurrent.ConcurrentHashMap<Integer, String>();
+        sourceStringToInt = new java.util.concurrent.ConcurrentHashMap<String, Integer>();
+        sourcePathToStringID = new java.util.concurrent.ConcurrentHashMap<String, String>();
         searchStats = null;
 
         IPEDSource.setUseConsoleForMissingImages(true);
@@ -82,58 +82,82 @@ public class Sources {
         int totalSources = arr.size();
         LOGGER.info("Found {} source(s) to load", totalSources);
 
-        boolean confInited = false;
-        List<IIPEDSource> sources = new ArrayList<IIPEDSource>();
-        int srcIndex = 0;
-        for (Object object : arr) {
-            srcIndex++;
-            JSONObject jsonobj = (JSONObject) object;
-            String id = (String) jsonobj.get("id");
+        if (totalSources > 0) {
+            JSONObject jsonobj = (JSONObject) arr.get(0);
             File file = new File(fixUNCPath((String) jsonobj.get("path")));
-
-            sourcePathToStringID.put(file.toString(), id);
-
-            if (!confInited) {
-                Configuration.getInstance().loadConfigurables(file + File.separator + "iped", true); //$NON-NLS-1$
-                confInited = true;
-            }
-
-            File sleuthDb = new File(file, "sleuth.db");
-            if (sleuthDb.exists() && (!sleuthDb.canWrite() || !file.canWrite())) {
-                LOGGER.warn("[{}/{}] ATENÇÃO: A pasta do caso ou o arquivo sleuth.db em '{}' estão como somente-leitura. " +
-                            "Dependendo da sua versão, o IPED precisará copiar o banco de dados inteiro para a pasta temporária " +
-                            "para conseguir abri-lo, causando grande lentidão na carga. Recomendamos conceder permissão de ESCRITA na pasta.", 
-                            srcIndex, totalSources, file.getAbsolutePath());
-            }
-
-            LOGGER.info("[{}/{}] Opening source '{}' at {}...", srcIndex, totalSources, id, file);
-            long srcStart = System.currentTimeMillis();
-            IPEDSource source = new IPEDSource(file);
-            long srcElapsed = System.currentTimeMillis() - srcStart;
-
-            File indexDir = source.getIndex();
-            String indexDirStr = indexDir != null ? indexDir.getAbsolutePath() : "Desconhecido";
-            double indexSizeMB = indexDir != null ? getFolderSize(indexDir) / (1024.0 * 1024.0) : 0.0;
-
-            LOGGER.info("[{}/{}] Source '{}' loaded (Índice: {}, Tamanho do Índice: {} MB, Total de Arquivos/Itens: {}, Tempo de carregamento: {} ms)", 
-                    srcIndex, totalSources, id, indexDirStr, String.format(java.util.Locale.US, "%.2f", indexSizeMB), 
-                    source.getTotalItems(), srcElapsed);
-
-            if (srcElapsed > 10000) {
-                LOGGER.warn("[{}/{}] O carregamento do source '{}' está levando bastante tempo ({} ms). " + 
-                            "Isso geralmente ocorre devido à inicialização interna do banco do Sleuthkit " +
-                            "(ex: construção do cache no populateHasChildrenMap), I/O lento do disco, " +
-                            "ou cópia do arquivo sleuth.db caso a pasta original seja somente-leitura. " +
-                            "Para otimizar, certifique-se de usar discos rápidos (SSD) ou habilitar modo de leitura robusta.", 
-                            srcIndex, totalSources, id, srcElapsed);
-            }
-
-            if (checkSources) {
-                LOGGER.info("[{}/{}] Checking data sources for '{}'...", srcIndex, totalSources, id);
-                source.precheckDataSources();
-            }
-            sources.add(source);
+            Configuration.getInstance().loadConfigurables(file + File.separator + "iped", true); //$NON-NLS-1$
         }
+
+        IIPEDSource[] sourcesArray = new IIPEDSource[totalSources];
+        java.util.concurrent.atomic.AtomicInteger processed = new java.util.concurrent.atomic.AtomicInteger(0);
+
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+        try {
+            java.util.List<java.util.concurrent.Callable<Void>> tasks = new java.util.ArrayList<>();
+            for (int i = 0; i < totalSources; i++) {
+                final int idx = i;
+                tasks.add(() -> {
+                    JSONObject jsonobj = (JSONObject) arr.get(idx);
+                    String id = (String) jsonobj.get("id");
+                    File file = new File(fixUNCPath((String) jsonobj.get("path")));
+
+                    sourcePathToStringID.put(file.toString(), id);
+
+                    File sleuthDb = new File(file, "sleuth.db");
+                    if (sleuthDb.exists() && (!sleuthDb.canWrite() || !file.canWrite())) {
+                        LOGGER.warn("[{}/{}] WARNING: Case folder or sleuth.db in '{}' is read-only. " +
+                                    "IPED might need to copy the entire database to a temp folder to open it, " +
+                                    "causing slow loading. We recommend granting WRITE permission to the folder.", 
+                                    (idx + 1), totalSources, file.getAbsolutePath());
+                    }
+
+                    int currentProcessed = processed.incrementAndGet();
+                    LOGGER.info("[{}/{}] Opening source '{}' at {}...", currentProcessed, totalSources, id, file);
+                    long srcStart = System.currentTimeMillis();
+                    IPEDSource source = null;
+                    try {
+                        source = new IPEDSource(file);
+                    } catch (Exception e) {
+                        LOGGER.error("Failed to open source '{}': {}", id, e.getMessage());
+                        throw new RuntimeException(e);
+                    }
+                    long srcElapsed = System.currentTimeMillis() - srcStart;
+
+                    File indexDir = source.getIndex();
+                    String indexDirStr = indexDir != null ? indexDir.getAbsolutePath() : "Desconhecido";
+                    double indexSizeMB = indexDir != null ? getFolderSize(indexDir) / (1024.0 * 1024.0) : 0.0;
+
+                    LOGGER.info("[{}/{}] Source '{}' loaded (Index: {}, Index Size: {} MB, Total Items: {}, Load Time: {} ms)", 
+                            currentProcessed, totalSources, id, indexDirStr, String.format(java.util.Locale.US, "%.2f", indexSizeMB), 
+                            source.getTotalItems(), srcElapsed);
+
+                    if (srcElapsed > 10000) {
+                        LOGGER.warn("[{}/{}] Loading source '{}' is taking a long time ({} ms). " + 
+                                    "This usually occurs due to Sleuthkit internal database initialization " +
+                                    "(e.g. building cache in populateHasChildrenMap), slow disk I/O, " +
+                                    "or copying sleuth.db if the original folder is read-only. " +
+                                    "To optimize, make sure to use fast disks (SSD) or enable robust reading mode.", 
+                                    currentProcessed, totalSources, id, srcElapsed);
+                    }
+
+                    if (checkSourcesFlag) {
+                        LOGGER.info("[{}/{}] Checking data sources for '{}'...", currentProcessed, totalSources, id);
+                        source.precheckDataSources();
+                    }
+                    sourcesArray[idx] = source;
+                    return null;
+                });
+            }
+            for (java.util.concurrent.Future<Void> f : executor.invokeAll(tasks)) {
+                f.get();
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Error initializing sources", e);
+        } finally {
+            executor.shutdownNow();
+        }
+
+        List<IIPEDSource> sources = java.util.Arrays.asList(sourcesArray);
 
         LOGGER.info("Initializing multi-source index...");
         multiSource = new IPEDMultiSource(sources);
@@ -359,22 +383,49 @@ public class Sources {
 
     private static void warmUpSources() {
         long start = System.currentTimeMillis();
-        int warmed = 0;
-        for (IIPEDSource src : multiSource.getAtomicSources()) {
-            try {
-                IPEDSearcher searcher = new IPEDSearcher((IPEDSource) src, "*");
-                searcher.setNoScoring(true);
-                searcher.count();
-                // also hit one doc to warm docvalues/stored small footprint
-                int[] totalHits = new int[1];
-                searcher.searchPaged(0, 1, totalHits);
-                warmed++;
-            } catch (Exception e) {
-                LOGGER.warn("Warmup failed for source {}: {}", src.getSourceId(), e.getMessage());
+        List<IPEDSource> sources = multiSource.getAtomicSources();
+        int total = sources.size();
+        LOGGER.info("Starting warmup for {} source(s)...", total);
+        
+        java.util.concurrent.atomic.AtomicInteger warmed = new java.util.concurrent.atomic.AtomicInteger(0);
+        java.util.concurrent.atomic.AtomicInteger processed = new java.util.concurrent.atomic.AtomicInteger(0);
+        
+        java.util.concurrent.ExecutorService executor = java.util.concurrent.Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors());
+        try {
+            java.util.List<java.util.concurrent.Callable<Void>> tasks = new java.util.ArrayList<>();
+            for (IIPEDSource src : sources) {
+                tasks.add(() -> {
+                    String sourceId = sourceIntToString.get(src.getSourceId());
+                    try {
+                        long srcStart = System.currentTimeMillis();
+                        IPEDSearcher searcher = new IPEDSearcher((IPEDSource) src, "*");
+                        searcher.setNoScoring(true);
+                        searcher.count();
+                        // also hit one doc to warm docvalues/stored small footprint
+                        int[] totalHits = new int[1];
+                        searcher.searchPaged(0, 1, totalHits);
+                        warmed.incrementAndGet();
+                        int currentProcessed = processed.incrementAndGet();
+                        long srcElapsed = System.currentTimeMillis() - srcStart;
+                        LOGGER.info("[{}/{}] Source '{}' warmup completed in {}ms", currentProcessed, total, sourceId, srcElapsed);
+                    } catch (Exception e) {
+                        int currentProcessed = processed.incrementAndGet();
+                        LOGGER.warn("[{}/{}] Warmup failed for source '{}': {}", currentProcessed, total, sourceId, e.getMessage());
+                    }
+                    return null;
+                });
             }
+            for (java.util.concurrent.Future<Void> f : executor.invokeAll(tasks)) {
+                f.get();
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Error during source warmup: {}", e.getMessage());
+        } finally {
+            executor.shutdownNow();
         }
+        
         long elapsed = System.currentTimeMillis() - start;
-        LOGGER.info("Warmup executed for {} source(s) in {}ms", warmed, elapsed);
+        LOGGER.info("Warmup executed for {} source(s) in {}ms", warmed.get(), elapsed);
     }
 
     private static void collectCategoryCounts(Category category, Map<String, Integer> perSource,

@@ -25,6 +25,7 @@ import iped.engine.webapi.json.DocPropsJSON;
 public class DocsBatch {
 
     private static final int MAX_BATCH = 100;
+    private static final java.util.concurrent.ExecutorService BATCH_EXECUTOR = java.util.concurrent.Executors.newFixedThreadPool(Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
 
     @Operation(summary = "Get document properties in batch")
     @POST
@@ -35,18 +36,27 @@ public class DocsBatch {
             return Response.status(Response.Status.BAD_REQUEST).build();
         }
 
-        List<DocPropsJSON> result = new ArrayList<>(docs.size());
+        List<java.util.concurrent.Future<DocPropsJSON>> futures = new ArrayList<>(docs.size());
         for (DocIDJSON ref : docs) {
-            if (ref == null || ref.getSource() == null) {
-                result.add(null);
-                continue;
-            }
+            futures.add(BATCH_EXECUTOR.submit(() -> {
+                if (ref == null || ref.getSource() == null) {
+                    return null;
+                }
+                try {
+                    IIPEDSource source = Sources.getSource(ref.getSource());
+                    return Docs.buildDocProps(source, ref.getSource(), ref.getId(), null);
+                } catch (Exception e) {
+                    // On any error (not found, IO, etc.) return null for this slot
+                    return null;
+                }
+            }));
+        }
+
+        List<DocPropsJSON> result = new ArrayList<>(docs.size());
+        for (java.util.concurrent.Future<DocPropsJSON> future : futures) {
             try {
-                IIPEDSource source = Sources.getSource(ref.getSource());
-                DocPropsJSON props = Docs.buildDocProps(source, ref.getSource(), ref.getId(), null);
-                result.add(props);
+                result.add(future.get());
             } catch (Exception e) {
-                // On any error (not found, IO, etc.) return null for this slot
                 result.add(null);
             }
         }
