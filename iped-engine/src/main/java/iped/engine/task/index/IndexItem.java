@@ -1062,9 +1062,167 @@ public class IndexItem extends BasicProps {
         } catch (Exception e) {
             e.printStackTrace();
         }
-
         return null;
+    }
 
+    /**
+     * Set of stored fields needed to construct an IItem capable of streaming content.
+     * Excludes large fields (content, thumbnail, imageFeatures) and most metadata
+     * to dramatically reduce Lucene stored-field I/O.
+     */
+    private static final Set<String> STREAMING_FIELDS = Set.of(
+            ID, NAME, EXT, LENGTH, CONTENTTYPE, PATH,
+            HASH, OFFSET, DELETED, ISDIR, HASCHILD, SUBITEM, CARVED, ISROOT,
+            ID_IN_SOURCE, SOURCE_PATH, SOURCE_DECODER,
+            HAS_PREVIEW, PREVIEW_EXT, EVIDENCE_UUID,
+            ThumbTask.HAS_THUMB, PARENTID, SUBITEMID, TYPE
+    );
+
+    /**
+     * Lightweight alternative to {@link #getItem(Document, IPEDSource, boolean)}
+     * that loads only the fields required for content streaming (getBufferedInputStream,
+     * getTikaStream). Avoids loading the large "content", "thumbnail", and
+     * "imageFeatures" stored fields, as well as all extra attributes and metadata.
+     * <p>
+     * Typical Lucene I/O savings: from 50+ stored fields to ~15 fields.
+     */
+    public static IItem getItemForStreaming(IPEDSource iCase, int luceneId) {
+        try {
+            Document doc = iCase.getSearcher().doc(luceneId, STREAMING_FIELDS);
+
+            Item evidence = new Item();
+
+            evidence.setName(doc.get(NAME));
+            String ext = doc.get(EXT);
+            if (ext != null) {
+                evidence.setExtension(ext);
+            }
+
+            String value = doc.get(LENGTH);
+            if (value != null && !value.isEmpty()) {
+                evidence.setLength(Long.valueOf(value));
+            }
+
+            value = doc.get(ID);
+            if (value != null) {
+                evidence.setId(Integer.valueOf(value));
+            }
+
+            value = doc.get(PARENTID);
+            if (value != null) {
+                evidence.setParentId(Integer.valueOf(value));
+            }
+
+            value = doc.get(CONTENTTYPE);
+            if (value != null) {
+                evidence.setMediaType(MediaType.parse(value));
+            }
+
+            evidence.setPath(doc.get(PATH));
+
+            value = doc.get(OFFSET);
+            if (value != null) {
+                evidence.setFileOffset(Long.parseLong(value));
+            }
+
+            value = doc.get(HASH);
+            if (value != null) {
+                evidence.setHash(value.toUpperCase());
+            }
+
+            value = doc.get(DELETED);
+            if (value != null) {
+                evidence.setDeleted(Boolean.parseBoolean(value));
+            }
+
+            value = doc.get(ISDIR);
+            if (value != null) {
+                evidence.setIsDir(Boolean.parseBoolean(value));
+            }
+
+            value = doc.get(SUBITEM);
+            if (value != null) {
+                evidence.setSubItem(Boolean.parseBoolean(value));
+            }
+
+            // Set up InputStreamFactory - essential for getBufferedInputStream()
+            value = doc.get(ID_IN_SOURCE);
+            if (value != null) {
+                evidence.setIdInDataSource(value);
+            }
+            if (doc.get(SOURCE_PATH) != null && doc.get(SOURCE_DECODER) != null) {
+                String sourcePath = doc.get(SOURCE_PATH);
+                String className = doc.get(SOURCE_DECODER);
+                if (SleuthkitInputStreamFactory.class.getName().equals(className)) {
+                    SleuthkitCase sleuthCase = iCase.getSleuthCase();
+                    if (sleuthCase != null) {
+                        sourcePath = sleuthCase.getDbDirPath() + File.separatorChar + sleuthCase.getDatabaseName();
+                    }
+                } else if (!MinIOInputInputStreamFactory.class.getName().equals(className)) {
+                    sourcePath = Util.getResolvedFile(iCase.getModuleDir().getParent(), sourcePath).toString();
+                }
+                synchronized (inputStreamFactories) {
+                    SeekableInputStreamFactory sisf = inputStreamFactories.get(sourcePath);
+                    if (sisf == null) {
+                        @SuppressWarnings("unchecked")
+                        Class<SeekableInputStreamFactory> clazz = (Class<SeekableInputStreamFactory>) Class
+                                .forName(className);
+                        try {
+                            Constructor<SeekableInputStreamFactory> c = clazz.getConstructor(Path.class);
+                            sisf = c.newInstance(Path.of(sourcePath));
+                        } catch (NoSuchMethodException e) {
+                            Constructor<SeekableInputStreamFactory> c = clazz.getConstructor(URI.class);
+                            sisf = c.newInstance(URI.create(sourcePath));
+                        }
+                        if (!iCase.isReport() && sisf.checkIfDataSourceExists()) {
+                            checkIfExistsAndAsk(sisf, iCase.getModuleDir());
+                        }
+                        inputStreamFactories.put(sourcePath, sisf);
+                    }
+                    evidence.setInputStreamFactory(sisf);
+                }
+            }
+
+            // Preview/view file setup
+            File outputBase = iCase.getModuleDir();
+            value = doc.get(HAS_PREVIEW);
+            if (Boolean.parseBoolean(value)) {
+                evidence.setHasPreview(true);
+                evidence.setPreviewBaseFolder(outputBase);
+            }
+            value = doc.get(PREVIEW_EXT);
+            if (value != null) {
+                evidence.setPreviewExt(value);
+            }
+
+            // View file for items without direct stream (e.g. previews)
+            if (StringUtils.isNotBlank(evidence.getHash())) {
+                File viewFile = Util.findFileFromHash(
+                        new File(outputBase, PreviewConstants.VIEW_FOLDER_NAME), evidence.getHash());
+                if (viewFile != null) {
+                    evidence.setViewFile(viewFile);
+                }
+            }
+
+            // Fallback for items without direct inputStream
+            if (!IOUtil.hasFile(evidence) && evidence.getIdInDataSource() == null) {
+                File viewFile = evidence.getViewFile();
+                if (viewFile != null) {
+                    evidence.setIdInDataSource("");
+                    evidence.setInputStreamFactory(new FileInputStreamFactory(viewFile.toPath()));
+                    evidence.setTempFile(viewFile);
+                } else if (evidence.hasPreview()) {
+                    evidence.setIdInDataSource(PreviewInputStreamFactory.getIdentifierForPreview(evidence));
+                    evidence.setInputStreamFactory(new PreviewInputStreamFactory(outputBase.toURI()));
+                }
+            }
+
+            return evidence;
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return null;
     }
 
     public static synchronized void checkIfExistsAndAsk(SeekableInputStreamFactory sisf, File caseModuleDir)

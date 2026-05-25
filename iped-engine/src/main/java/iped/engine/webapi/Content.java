@@ -23,6 +23,8 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import iped.data.IIPEDSource;
 import iped.data.IItem;
+import iped.engine.data.IPEDSource;
+import iped.engine.task.index.IndexItem;
 
 @Tag(name = "Documents")
 @Path("sources/{sourceID}/docs/{id}/content")
@@ -48,8 +50,21 @@ public class Content {
             @HeaderParam("Range") String rangeHeader)
             throws TskCoreException, IOException, URISyntaxException {
 
+        // Phase tracking for request instrumentation
+        RequestTracker.RequestInfo reqInfo = null;
+        Long reqId = RequestTracker.getCurrentRequestId();
+        if (reqId != null) {
+            reqInfo = RequestTracker.getInstance().getRequest(reqId);
+        }
+
+        if (reqInfo != null) reqInfo.markPhase("resolve_source");
         IIPEDSource source = Sources.getSource(sourceID);
-        final IItem item = source.getItemByID(id);
+
+        // Use lightweight loader: loads only ~15 fields instead of 50+
+        // Skips content, thumbnail, imageFeatures, and all metadata fields
+        if (reqInfo != null) reqInfo.markPhase("load_item");
+        int luceneId = source.getLuceneId(id);
+        final IItem item = IndexItem.getItemForStreaming((IPEDSource) source, luceneId);
         final Long lengthObj = item.getLength();          // nullable
         final long totalLength = lengthObj != null ? lengthObj : -1L;
         final String fileName = item.getName();
@@ -57,6 +72,7 @@ public class Content {
         // Eagerly open the stream before committing the HTTP response.
         // If Sleuthkit (or another backend) fails here (e.g. "Seek to X failed"),
         // we can still return a proper HTTP error instead of a broken pipe.
+        if (reqInfo != null) reqInfo.markPhase("open_stream");
         final InputStream eagleStream;
         try {
             eagleStream = item.getBufferedInputStream();
@@ -67,6 +83,8 @@ public class Content {
                     .entity("Error reading content: " + e.getMessage())
                     .build();
         }
+
+        if (reqInfo != null) reqInfo.markPhase("build_response");
 
         // Parse optional Range header (only single byte-range supported)
         if (totalLength > 0 && rangeHeader != null && rangeHeader.startsWith("bytes=")) {
@@ -107,11 +125,21 @@ public class Content {
         return rb.entity(new StreamingOutput() {
                     @Override
                     public void write(OutputStream out) throws IOException, WebApplicationException {
+                        RequestTracker.RequestInfo reqInfo = null;
+                        Long reqId = RequestTracker.getCurrentRequestId();
+                        if (reqId != null) {
+                            reqInfo = RequestTracker.getInstance().getRequest(reqId);
+                        }
                         try (InputStream is = eagleStream) {
                             byte[] buf = new byte[BUFFER_SIZE];
                             int read;
                             int writes = 0;
-                            while ((read = is.read(buf)) != -1) {
+                            // reset lastMarkNanos if needed by marking start
+                            if (reqInfo != null) reqInfo.markPhase("stream_init");
+                            while (true) {
+                                read = is.read(buf);
+                                if (reqInfo != null) reqInfo.markPhase("stream_read");
+                                if (read == -1) break;
                                 out.write(buf, 0, read);
                                 // Flush periodically so the client receives progress
                                 // events instead of waiting for Grizzly's internal
@@ -119,8 +147,10 @@ public class Content {
                                 if (++writes % FLUSH_INTERVAL == 0) {
                                     out.flush();
                                 }
+                                if (reqInfo != null) reqInfo.markPhase("stream_write");
                             }
                             out.flush();
+                            if (reqInfo != null) reqInfo.markPhase("stream_write");
                         }
                     }
                 }).build();

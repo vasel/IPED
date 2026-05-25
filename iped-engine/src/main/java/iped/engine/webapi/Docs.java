@@ -1,8 +1,10 @@
 package iped.engine.webapi;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -27,6 +29,18 @@ import iped.engine.webapi.json.DocPropsJSON;
 @Path("sources/{sourceID}/docs")
 public class Docs {
 
+    /**
+     * Stored fields that are large binary/text payloads and must NOT be loaded
+     * by default in props-batch responses. They are served by dedicated endpoints
+     * (e.g. /thumb, /text/content), so loading them here is pure waste and the
+     * main cause of slow batch responses.
+     */
+    private static final Set<String> LARGE_DEFAULT_SKIP_FIELDS = new HashSet<>(Arrays.asList(
+            "content",       // BasicProps.CONTENT
+            "thumbnail",     // BasicProps.THUMB — binary thumbnail bytes
+            "imageFeatures"  // ImageSimilarityTask.IMAGE_FEATURES — binary
+    ));
+
     @Operation(summary = "Get document's properties")
     @GET
     @Path("{id}")
@@ -39,20 +53,44 @@ public class Docs {
 
     /**
      * Builds a DocPropsJSON with optional field filtering. When {@code fieldsFilter}
-     * is null, all fields are included. Otherwise, only the specified fields are
-     * fetched from the Lucene document.
+     * is null, all fields except known large binary fields are included. When
+     * specified, only the requested fields are fetched from the Lucene document.
+     * <p>
+     * Properties from stored fields are cached in {@link DocPropsCache} (immutable
+     * per Lucene doc); bookmarks and selection are always re-read from the live
+     * source so they reflect runtime changes.
      */
     public static DocPropsJSON buildDocProps(IIPEDSource source, String sourceID, int id, Set<String> fieldsFilter)
             throws IOException {
-        int luceneID = source.getLuceneId(id);
-        
-        Document doc;
+
+        DocPropsJSON result = new DocPropsJSON();
+        result.setSource(sourceID);
+        result.setId(id);
+
+        // Fast path: cached properties (only for the default "all fields" case).
         if (fieldsFilter == null || fieldsFilter.isEmpty()) {
-            // Se o filtro for nulo, evitamos carregar campos gigantes (ex: 'content') para não gerar gargalos de I/O em batch
+            DocPropsCache.Entry cached = DocPropsCache.get(sourceID, id);
+            if (cached != null) {
+                result.setLuceneId(cached.luceneId);
+                result.setProperties(cached.properties);
+                result.setBookmarks(source.getBookmarks().getBookmarkList(id));
+                result.setSelected(source.getBookmarks().isChecked(id));
+                return result;
+            }
+        }
+
+        int luceneID = source.getLuceneId(id);
+        result.setLuceneId(luceneID);
+
+        Document doc;
+        Set<String> normalizedFilter = null;
+        if (fieldsFilter == null || fieldsFilter.isEmpty()) {
+            // Skip large binary fields (thumbnail, imageFeatures, content) — they
+            // are served by dedicated endpoints and dominate stored-fields I/O.
             DocumentStoredFieldVisitor visitor = new DocumentStoredFieldVisitor() {
                 @Override
                 public StoredFieldVisitor.Status needsField(FieldInfo fieldInfo) throws IOException {
-                    if ("content".equals(fieldInfo.name)) {
+                    if (LARGE_DEFAULT_SKIP_FIELDS.contains(fieldInfo.name)) {
                         return StoredFieldVisitor.Status.NO;
                     }
                     return super.needsField(fieldInfo);
@@ -61,29 +99,34 @@ public class Docs {
             source.getReader().document(luceneID, visitor);
             doc = visitor.getDocument();
         } else {
-            Set<String> normalized = new HashSet<>();
+            normalizedFilter = new HashSet<>();
             for (String f : fieldsFilter) {
                 if (f != null && !f.isBlank()) {
-                    normalized.add(f.trim());
+                    normalizedFilter.add(f.trim());
                 }
             }
-            doc = source.getReader().document(luceneID, normalized);
-            fieldsFilter = normalized;
+            doc = source.getReader().document(luceneID, normalizedFilter);
         }
 
-        DocPropsJSON result = new DocPropsJSON();
-        result.setSource(sourceID);
-        result.setId(id);
-        result.setLuceneId(luceneID);
-
-        Map<String, String[]> properties = new HashMap<String, String[]>();
-        if (fieldsFilter == null || fieldsFilter.isEmpty()) {
+        Map<String, String[]> properties = new HashMap<>();
+        if (normalizedFilter == null) {
+            // Deduplicate field names before calling doc.getValues() (which does
+            // a linear scan over all fields). Without dedup this loop is O(N^2)
+            // since multi-valued fields appear once per value in doc.getFields().
+            Set<String> seen = new LinkedHashSet<>();
             for (IndexableField field : doc.getFields()) {
-                String[] values = doc.getValues(field.name());
-                properties.put(field.name(), values);
+                seen.add(field.name());
             }
+            for (String name : seen) {
+                String[] values = doc.getValues(name);
+                if (values != null && values.length > 0) {
+                    properties.put(name, values);
+                }
+            }
+            // Cache the immutable property map for subsequent requests.
+            DocPropsCache.put(sourceID, id, new DocPropsCache.Entry(luceneID, properties));
         } else {
-            for (String fieldName : fieldsFilter) {
+            for (String fieldName : normalizedFilter) {
                 String[] values = doc.getValues(fieldName);
                 if (values != null && values.length > 0) {
                     properties.put(fieldName, values);

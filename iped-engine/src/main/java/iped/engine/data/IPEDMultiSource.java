@@ -4,6 +4,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -34,6 +35,13 @@ public class IPEDMultiSource extends IPEDSource {
     private static Logger LOGGER = LoggerFactory.getLogger(IPEDMultiSource.class);
 
     private static ArrayList<Integer> baseDocCache = new ArrayList<Integer>();
+
+    /**
+     * Pre-computed array of base Lucene doc IDs per source, for O(log n) lookups.
+     * baseDocs[i] = sum of reader.maxDoc() for cases 0..i-1.
+     * baseDocs[cases.size()] = total maxDoc (sentinel for binary search).
+     */
+    private int[] baseDocs;
 
     List<IPEDSource> cases = new ArrayList<>();
 
@@ -147,8 +155,12 @@ public class IPEDMultiSource extends IPEDSource {
         for (IPEDSource iCase : cases)
             totalItens += iCase.totalItens;
 
-        for (IIPEDSource iCase : cases)
-            baseDocCache.add(getBaseLuceneId(iCase));
+        // Build pre-computed base doc array for O(log n) lookups
+        buildBaseDocsArray();
+
+        baseDocCache.clear();
+        for (int idx = 0; idx < cases.size(); idx++)
+            baseDocCache.add(baseDocs[idx]);
 
         loadCategories();
 
@@ -163,6 +175,21 @@ public class IPEDMultiSource extends IPEDSource {
         analyzer = AppAnalyzer.get();
 
         LOGGER.info("Loaded " + cases.size() + " cases."); //$NON-NLS-1$ //$NON-NLS-2$
+    }
+
+    /**
+     * Build a sorted array of base Lucene doc IDs for each source.
+     * baseDocs[i] holds the starting Lucene doc ID for cases[i].
+     * baseDocs[cases.size()] is a sentinel equal to the total maxDoc.
+     */
+    private void buildBaseDocsArray() {
+        baseDocs = new int[cases.size() + 1];
+        int cumulative = 0;
+        for (int idx = 0; idx < cases.size(); idx++) {
+            baseDocs[idx] = cumulative;
+            cumulative += cases.get(idx).reader.maxDoc();
+        }
+        baseDocs[cases.size()] = cumulative; // sentinel
     }
 
     private void loadCategories() {
@@ -225,12 +252,16 @@ public class IPEDMultiSource extends IPEDSource {
     }
 
     final public IIPEDSource getAtomicSource(int luceneId) {
-        int maxDoc = 0;
-        for (IPEDSource iCase : cases) {
-            maxDoc += iCase.reader.maxDoc();
-            if (luceneId < maxDoc)
-                return iCase;
+        // Binary search on pre-computed baseDocs array: O(log n) instead of O(n)
+        int idx = Arrays.binarySearch(baseDocs, 0, cases.size() + 1, luceneId);
+        if (idx < 0) {
+            // binarySearch returns -(insertion point) - 1 when not found.
+            // The source index is (insertion point - 1).
+            idx = -idx - 2;
         }
+        // If exact match on a boundary, we want that source (baseDocs[idx] == luceneId)
+        if (idx >= 0 && idx < cases.size())
+            return cases.get(idx);
         return null;
     }
 
@@ -243,6 +274,12 @@ public class IPEDMultiSource extends IPEDSource {
     }
 
     public final int getBaseLuceneId(IIPEDSource atomicCase) {
+        // O(1) lookup using pre-computed array
+        int sourceId = atomicCase.getSourceId();
+        if (sourceId >= 0 && sourceId < cases.size()) {
+            return baseDocs[sourceId];
+        }
+        // Fallback for safety
         int maxDoc = 0;
         for (IPEDSource iCase : cases) {
             if (atomicCase == iCase)
@@ -283,11 +320,14 @@ public class IPEDMultiSource extends IPEDSource {
     }
 
     final public IItemId getItemId(int luceneId) {
-        IIPEDSource atomicSource = getAtomicSource(luceneId);
-        int sourceId = atomicSource.getSourceId();
-        int baseDoc = getBaseLuceneId(atomicSource);
-        int id = atomicSource.getId(luceneId - baseDoc);
-        return new ItemId(sourceId, id);
+        // Optimized: single binary search, then direct array lookup for baseDoc
+        int idx = Arrays.binarySearch(baseDocs, 0, cases.size() + 1, luceneId);
+        if (idx < 0) {
+            idx = -idx - 2;
+        }
+        IPEDSource source = cases.get(idx);
+        int id = source.getId(luceneId - baseDocs[idx]);
+        return new ItemId(idx, id);
     }
 
     final public int getLuceneId(int id) {

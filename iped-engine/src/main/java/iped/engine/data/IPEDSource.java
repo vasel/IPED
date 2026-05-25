@@ -565,6 +565,16 @@ public class IPEDSource implements IIPEDSource {
         return getItemByLuceneID(docs[id]);
     }
 
+    /**
+     * Lightweight alternative to {@link #getItemByID(int)} that loads only the
+     * stored fields required for content streaming. Skips large fields like
+     * content, thumbnail, and imageFeatures.
+     */
+    public IItem getItemByIDForStreaming(int id) {
+        int luceneId = docs[id];
+        return IndexItem.getItemForStreaming(this, luceneId);
+    }
+
     public void reopen() throws IOException {
         close();
         openIndex(index, iw);

@@ -1,8 +1,10 @@
 package iped.engine.webapi;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import javax.ws.rs.Consumes;
 import javax.ws.rs.POST;
@@ -19,13 +21,28 @@ import iped.engine.webapi.json.DocPropsJSON;
 
 /**
  * Batch endpoint to fetch document properties in a single call.
+ *
+ * <p>Per-document work is dispatched to a single, process-wide bounded thread
+ * pool. Using one shared pool (instead of one per request) keeps total
+ * parallelism stable when many concurrent batch requests arrive, avoiding the
+ * thread/IO contention that hurts throughput.</p>
  */
 @Tag(name = "Documents")
 @Path("api/docs/props-batch")
 public class DocsBatch {
 
     private static final int MAX_BATCH = 100;
-    private static final java.util.concurrent.ExecutorService BATCH_EXECUTOR = java.util.concurrent.Executors.newFixedThreadPool(Math.max(4, Runtime.getRuntime().availableProcessors() * 2));
+
+    /** Shared bounded pool for per-doc property building across ALL batch requests. */
+    private static final int BATCH_THREADS = Math.max(2, Integer.parseInt(
+            System.getProperty("iped.webapi.docsbatch.threads",
+                    String.valueOf(Math.min(16, Runtime.getRuntime().availableProcessors())))));
+
+    private static final ExecutorService BATCH_EXECUTOR = Executors.newFixedThreadPool(BATCH_THREADS, r -> {
+        Thread t = new Thread(r, "docs-batch-pool");
+        t.setDaemon(true);
+        return t;
+    });
 
     @Operation(summary = "Get document properties in batch")
     @POST
@@ -36,7 +53,7 @@ public class DocsBatch {
             return Response.status(Response.Status.BAD_REQUEST).build();
         }
 
-        List<java.util.concurrent.Future<DocPropsJSON>> futures = new ArrayList<>(docs.size());
+        List<Future<DocPropsJSON>> futures = new ArrayList<>(docs.size());
         for (DocIDJSON ref : docs) {
             futures.add(BATCH_EXECUTOR.submit(() -> {
                 if (ref == null || ref.getSource() == null) {
@@ -53,7 +70,7 @@ public class DocsBatch {
         }
 
         List<DocPropsJSON> result = new ArrayList<>(docs.size());
-        for (java.util.concurrent.Future<DocPropsJSON> future : futures) {
+        for (Future<DocPropsJSON> future : futures) {
             try {
                 result.add(future.get());
             } catch (Exception e) {

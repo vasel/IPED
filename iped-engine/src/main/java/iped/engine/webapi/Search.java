@@ -127,9 +127,8 @@ public class Search {
 
         Sort sort = null;
         if (sortField != null && !sortField.trim().isEmpty()) {
-            boolean reverse = "desc".equalsIgnoreCase(sortOrder.trim());
             try {
-                sort = SortFieldHelper.buildSort(Sources.multiSource, sortField.trim(), reverse);
+                sort = SortFieldHelper.buildSort(Sources.multiSource, sortField.trim(), sortOrder != null ? sortOrder.trim() : "");
             } catch (IllegalArgumentException e) {
                 return Response.status(Response.Status.BAD_REQUEST)
                         .entity("{\"error\":\"" + e.getMessage().replace("\"", "'") + "\"}")

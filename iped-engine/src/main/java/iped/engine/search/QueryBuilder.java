@@ -371,7 +371,8 @@ public class QueryBuilder {
         if(texto.trim().startsWith("* "))
             texto = texto.trim().replaceFirst("\\* ", "*:* ");
 
-        if (texto.trim().isEmpty())
+        String trimmed = texto.trim();
+        if (trimmed.isEmpty() || trimmed.equals("*") || trimmed.equals("*:*"))
             return new MatchAllDocsQuery();
 
         else {

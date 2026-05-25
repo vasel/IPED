@@ -25,6 +25,7 @@ import iped.data.IItem;
 import iped.engine.config.ConfigurationManager;
 import iped.engine.data.IPEDSource;
 import iped.engine.task.ParsingTask;
+import iped.engine.task.index.IndexItem;
 import iped.parsers.standard.StandardParser;
 
 @Tag(name = "Documents")
@@ -37,14 +38,30 @@ public class Text {
     public static StreamingOutput content(@PathParam("sourceID") String sourceID, @PathParam("id") int id)
             throws Exception {
 
+        // Phase tracking for request instrumentation
+        RequestTracker.RequestInfo reqInfo = null;
+        Long reqId = RequestTracker.getCurrentRequestId();
+        if (reqId != null) {
+            reqInfo = RequestTracker.getInstance().getRequest(reqId);
+        }
+
+        if (reqInfo != null) reqInfo.markPhase("resolve_source");
         IIPEDSource source = Sources.getSource(sourceID);
-        final IItem item = source.getItemByID(id);
+
+        // Use lightweight loader: loads only ~15 fields instead of 50+
+        if (reqInfo != null) reqInfo.markPhase("load_item");
+        int luceneId = source.getLuceneId(id);
+        final IItem item = IndexItem.getItemForStreaming((IPEDSource) source, luceneId);
+
+        if (reqInfo != null) reqInfo.markPhase("setup_parser");
         final StandardParser parser = new StandardParser();
         final ParseContext context = getTikaContext(item, parser, (IPEDSource) source);
         final Metadata metadata = new Metadata();
 
         ParsingTask.fillMetadata(item, metadata);
         parser.setPrintMetadata(false);
+
+        if (reqInfo != null) reqInfo.markPhase("build_response");
 
         return new StreamingOutput() {
             @Override

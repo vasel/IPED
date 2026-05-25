@@ -29,6 +29,7 @@ import iped.data.IIPEDSource;
 import iped.data.IItem;
 import iped.engine.webapi.Text;
 import iped.engine.task.ParsingTask;
+import iped.engine.task.index.IndexItem;
 import iped.engine.data.IPEDSource;
 import iped.parsers.standard.StandardParser;
 import iped.parsers.util.ToXMLContentHandler;
@@ -89,10 +90,23 @@ public class HtmlContent {
             @Override
             public void write(OutputStream output) throws IOException, WebApplicationException {
                 try {
+                    // Phase tracking for request instrumentation
+                    RequestTracker.RequestInfo reqInfo = null;
+                    Long reqId = RequestTracker.getCurrentRequestId();
+                    if (reqId != null) {
+                        reqInfo = RequestTracker.getInstance().getRequest(reqId);
+                    }
+
+                    if (reqInfo != null) reqInfo.markPhase("resolve_source");
                     IIPEDSource source = Sources.getSource(sourceID);
-                    final IItem item = source.getItemByID(id);
+
+                    // Use lightweight loader: loads only ~15 fields instead of 50+
+                    if (reqInfo != null) reqInfo.markPhase("load_item");
+                    int luceneId = source.getLuceneId(id);
+                    final IItem item = IndexItem.getItemForStreaming((IPEDSource) source, luceneId);
 
                     // Verifica suporte a NFe/CTe
+                    if (reqInfo != null) reqInfo.markPhase("check_nfe");
                     iped.viewers.NfeViewer nfeViewer = new iped.viewers.NfeViewer();
                     String mediaType = item.getMediaType().toString();
                     if (nfeViewer.isSupportedType(mediaType)) {
@@ -110,6 +124,7 @@ public class HtmlContent {
                         return;
                     }
 
+                    if (reqInfo != null) reqInfo.markPhase("setup_parser");
                     final StandardParser parser = new StandardParser();
                     final ParseContext context = Text.getTikaContext(item, parser, (IPEDSource) source);
                     final Metadata metadata = new Metadata();
@@ -117,6 +132,7 @@ public class HtmlContent {
                     ParsingTask.fillMetadata(item, metadata);
                     parser.setPrintMetadata(false);
 
+                    if (reqInfo != null) reqInfo.markPhase("parse");
                     ContentHandler handler = new ToXMLContentHandler(output, "UTF-8");
 
                     try (TikaInputStream is = item.getTikaStream()) {

@@ -129,14 +129,26 @@ public class SleuthkitServer {
                     notify(os);
 
                 } catch (Throwable e) {
-                    // e.printStackTrace(System.err);
-                    String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
-                    byte[] msgBytes = msg.getBytes("UTF-8"); //$NON-NLS-1$
-                    out.putInt(13, msgBytes.length);
-                    out.position(17);
-                    out.put(msgBytes);
-                    commitByte(out, 0, FLAGS.EXCEPTION);
-                    notify(os);
+                    try {
+                        e.printStackTrace(System.err);
+                        String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
+                        byte[] msgBytes = msg.getBytes("UTF-8"); //$NON-NLS-1$
+                        out.putInt(13, msgBytes.length);
+                        out.position(17);
+                        out.put(msgBytes);
+                        commitByte(out, 0, FLAGS.EXCEPTION);
+                        notify(os);
+                    } catch (Throwable e2) {
+                        e2.printStackTrace(System.err);
+                        // If we can't send the exception back to the client,
+                        // signal error and break to restart the server
+                        commitByte(out, 0, FLAGS.ERROR);
+                        try {
+                            notify(os);
+                        } catch (IOException ignored) {
+                        }
+                        break;
+                    }
                 }
             }
 
@@ -164,13 +176,16 @@ public class SleuthkitServer {
             if (content == null) {
                 content = sleuthCase.getContentById(id);
             }
+            if (content == null) {
+                throw new IOException("Content not found in sleuth.db for id=" + id); //$NON-NLS-1$
+            }
             sis = new SleuthkitInputStream(content);
             sisMap.put(streamId, sis);
 
             // first read can take a long time, so do it here to prevent timeouts on client
             // side
-            Long sourceId = content.getDataSource().getId();
-            if (!warmedDataSources.contains(sourceId)) {
+            Long sourceId = content.getDataSource() != null ? content.getDataSource().getId() : null;
+            if (sourceId != null && !warmedDataSources.contains(sourceId)) {
                 sis.read();
                 sis.seek(0);
                 warmedDataSources.add(sourceId);

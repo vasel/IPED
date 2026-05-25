@@ -76,20 +76,44 @@ public class SortFieldHelper {
     }
 
     /**
-     * Builds a Lucene {@link Sort} for the given field name and direction,
+     * Builds a Lucene {@link Sort} for the given field name(s) and direction(s),
      * inspecting the index to determine the correct SortField.Type.
+     * Supports multiple fields separated by commas.
      *
-     * @param source   the IPEDSource (or IPEDMultiSource) whose index is queried
-     * @param field    the index field name to sort by, or "relevance" for score-based sorting
-     * @param reverse  true for descending order
-     * @return a Sort object ready to pass to Lucene's IndexSearcher
-     * @throws IllegalArgumentException if the field does not exist or is not sortable
+     * @param source    the IPEDSource (or IPEDMultiSource) whose index is queried
+     * @param fieldsCsv the index field names to sort by (comma separated)
+     * @param ordersCsv the sort directions (comma separated), e.g. "asc,desc"
+     * @return a Sort object ready to pass to Lucene's IndexSearcher, or null if no valid fields
+     * @throws IllegalArgumentException if any field does not exist or is not sortable
      */
-    public static Sort buildSort(IPEDSource source, String field, boolean reverse) {
+    public static Sort buildSort(IPEDSource source, String fieldsCsv, String ordersCsv) {
+        String[] fields = fieldsCsv.split(",");
+        String[] orders = ordersCsv != null ? ordersCsv.split(",") : new String[0];
+        List<SortField> sortFields = new ArrayList<>();
+
+        for (int i = 0; i < fields.length; i++) {
+            String field = fields[i].trim();
+            if (field.isEmpty()) continue;
+
+            boolean reverse = false;
+            if (i < orders.length) {
+                reverse = "desc".equalsIgnoreCase(orders[i].trim());
+            } else if (orders.length > 0) {
+                reverse = "desc".equalsIgnoreCase(orders[orders.length - 1].trim());
+            }
+
+            sortFields.add(buildSingleSortField(source, field, reverse));
+        }
+
+        if (sortFields.isEmpty()) return null;
+        return new Sort(sortFields.toArray(new SortField[0]));
+    }
+
+    private static SortField buildSingleSortField(IPEDSource source, String field, boolean reverse) {
         if ("relevance".equalsIgnoreCase(field)) {
             // Score-based sorting: highest score first when reverse=false (default desc for score),
             // lowest score first when reverse=true. SortField.FIELD_SCORE is naturally descending.
-            return new Sort(new SortField(null, SortField.Type.SCORE, reverse));
+            return new SortField(null, SortField.Type.SCORE, reverse);
         }
 
         LeafReader reader = source.getLeafReader();
@@ -109,18 +133,18 @@ public class SortFieldHelper {
                 // String-valued or date-valued (ISO-8601 strings sort lexicographically = chronologically)
                 if (dvType == DocValuesType.SORTED_SET) {
                     // SortedSetDocValues needs SortedSetSortField
-                    return new Sort(new org.apache.lucene.search.SortedSetSortField(field, reverse));
+                    return new org.apache.lucene.search.SortedSetSortField(field, reverse);
                 }
-                return new Sort(new SortField(field, SortField.Type.STRING, reverse));
+                return new SortField(field, SortField.Type.STRING, reverse);
 
             case NUMERIC: {
                 SortField.Type sfType = resolveNumericSortFieldType(field);
-                return new Sort(new SortField(field, sfType, reverse));
+                return new SortField(field, sfType, reverse);
             }
 
             case SORTED_NUMERIC: {
                 SortField.Type sfType = resolveNumericSortFieldType(field);
-                return new Sort(new SortedNumericSortField(field, sfType, reverse));
+                return new SortedNumericSortField(field, sfType, reverse);
             }
 
             default:
