@@ -997,6 +997,7 @@ public class RequestMonitorConsole implements Runnable {
                 break;
 
             case "cancel":
+            case "stop":
                 if (ThumbnailProcessor.isBusy()) {
                     ThumbnailProcessor.cancelRunning();
                     System.out.println(YELLOW + "Cancel signal sent." + RESET);
@@ -1091,6 +1092,7 @@ public class RequestMonitorConsole implements Runnable {
                 System.out.println("Matched:    " + snapshot.getMatched());
                 System.out.println("Generated:  " + snapshot.getGenerated());
                 System.out.println("Skipped:    " + snapshot.getSkipped());
+                System.out.println("InvalidPdf: " + snapshot.getInvalidPdf());
                 System.out.println("Errors:     " + snapshot.getErrors());
                 if (snapshot.getLastError() != null) {
                     System.out.println("Last error: " + snapshot.getLastError());
@@ -1098,7 +1100,7 @@ public class RequestMonitorConsole implements Runnable {
                 System.out.println("Elapsed:    " + formatDuration(snapshot.getElapsedMs()));
                 System.out.println(DIM + "Updated:    " + java.time.Instant.ofEpochMilli(snapshot.getUpdatedAt()) + RESET);
                 System.out.println();
-                System.out.println(DIM + "Press Enter to exit watch mode." + RESET);
+                System.out.println(DIM + "Press Enter to exit watch mode. Type 'c' + Enter to cancel the process." + RESET);
 
                 if (!snapshot.isRunning()) {
                     break;
@@ -1106,8 +1108,21 @@ public class RequestMonitorConsole implements Runnable {
 
                 Thread.sleep(1000);
                 if (System.in.available() > 0) {
+                    StringBuilder sb = new StringBuilder();
                     while (System.in.available() > 0) {
-                        System.in.read();
+                        int ch = System.in.read();
+                        if (ch != '\n' && ch != '\r') {
+                            sb.append((char) ch);
+                        }
+                    }
+                    String input = sb.toString().trim().toLowerCase();
+                    if ("c".equals(input) || "cancel".equals(input) || "stop".equals(input)) {
+                        if (ThumbnailProcessor.isBusy()) {
+                            ThumbnailProcessor.cancelRunning();
+                            System.out.println(YELLOW + "\nCancel signal sent. Waiting for process to stop..." + RESET);
+                            // Stay in watch mode to show final status
+                            continue;
+                        }
                     }
                     break;
                 }
@@ -1126,7 +1141,7 @@ public class RequestMonitorConsole implements Runnable {
         System.out.println("  process thumbnails [--force|-force] <ext...>");
         System.out.println("  process status");
         System.out.println("  process watch");
-        System.out.println("  process cancel");
+        System.out.println("  process cancel|stop");
     }
 
     private void watchLoop(int historyLimit) {

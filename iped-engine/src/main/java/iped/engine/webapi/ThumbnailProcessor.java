@@ -10,6 +10,7 @@ import java.io.File;
 import java.io.FileReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.BufferedInputStream;
 import java.io.InputStream;
 import java.net.URL;
 import java.nio.file.Files;
@@ -48,6 +49,8 @@ public class ThumbnailProcessor implements Runnable {
 
     private static final int THUMB_SIZE = 480;
     private static final int MAX_ERROR_MESSAGE_LENGTH = 300;
+    private static final int MIN_PDF_SIZE = 67; // smallest valid PDF is ~67 bytes
+    private static final byte[] PDF_MAGIC = { '%', 'P', 'D', 'F', '-' };
     private static final Logger LOGGER = LoggerFactory.getLogger(ThumbnailProcessor.class);
 
 
@@ -247,6 +250,14 @@ public class ThumbnailProcessor implements Runnable {
                     continue;
                 }
 
+                // Fast content-type pre-filter for PDFs: skip files with known non-PDF content type
+                if (PDF_EXTENSIONS.contains(ext) && contentType != null && !contentType.isEmpty()
+                        && !contentType.toLowerCase().startsWith("application/pdf")) {
+                    incrementSkipped();
+                    incrementInvalidPdf();
+                    continue;
+                }
+
                 incrementMatched();
                 String hash = doc.get(BasicProps.HASH);
                 String name = doc.get(BasicProps.NAME);
@@ -270,12 +281,22 @@ public class ThumbnailProcessor implements Runnable {
                         continue;
                     }
 
+                    // Fast size check for PDFs
+                    if (PDF_EXTENSIONS.contains(ext)) {
+                        Long itemLen = item.getLength();
+                        if (itemLen != null && itemLen < MIN_PDF_SIZE) {
+                            incrementSkipped();
+                            incrementInvalidPdf();
+                            continue;
+                        }
+                    }
+
                     byte[] thumbBytes = generateThumbnail(item, ext);
                     if (thumbBytes != null && thumbBytes.length > 0) {
                         saveThumbToDisk(thumbsDir, hash, thumbBytes);
                         incrementGenerated();
                     } else {
-                        recordError("No thumbnail generated for " + name);
+                        incrementSkipped();
                     }
                 } catch (Exception e) {
                     LOGGER.warn("Error generating thumbnail for {} ({})", name, ext, e);
@@ -287,6 +308,7 @@ public class ThumbnailProcessor implements Runnable {
                     System.out.print("\r  matched=" + snapshot.getMatched()
                             + " generated=" + snapshot.getGenerated()
                             + " skipped=" + snapshot.getSkipped()
+                            + " invalidPdf=" + snapshot.getInvalidPdf()
                             + " errors=" + snapshot.getErrors() + "   ");
                     System.out.flush();
                 }
@@ -297,16 +319,18 @@ public class ThumbnailProcessor implements Runnable {
                     + " matched=" + snapshot.getMatched()
                     + " generated=" + snapshot.getGenerated()
                     + " skipped=" + snapshot.getSkipped()
+                    + " invalidPdf=" + snapshot.getInvalidPdf()
                     + " errors=" + snapshot.getErrors() + "         ");
         }
 
         StatusSnapshot snapshot = STATUS.get();
         System.out.println(BOLD + "\n=== Summary ===" + RESET);
-        System.out.println("Matched:   " + snapshot.getMatched());
-        System.out.println("Generated: " + GREEN + snapshot.getGenerated() + RESET);
-        System.out.println("Skipped:   " + snapshot.getSkipped());
-        System.out.println("Errors:    " + (snapshot.getErrors() > 0 ? RED + String.valueOf(snapshot.getErrors()) + RESET : "0"));
-        System.out.println("Elapsed:   " + formatDuration(snapshot.getElapsedMs()));
+        System.out.println("Matched:    " + snapshot.getMatched());
+        System.out.println("Generated:  " + GREEN + snapshot.getGenerated() + RESET);
+        System.out.println("Skipped:    " + snapshot.getSkipped());
+        System.out.println("InvalidPdf: " + (snapshot.getInvalidPdf() > 0 ? YELLOW + String.valueOf(snapshot.getInvalidPdf()) + RESET : "0"));
+        System.out.println("Errors:     " + (snapshot.getErrors() > 0 ? RED + String.valueOf(snapshot.getErrors()) + RESET : "0"));
+        System.out.println("Elapsed:    " + formatDuration(snapshot.getElapsedMs()));
     }
 
     private boolean thumbAlreadyExists(Document doc, File thumbsDir, String hash) {
@@ -374,6 +398,12 @@ public class ThumbnailProcessor implements Runnable {
 
     private byte[] generatePdfThumbnail(IItem item) throws Exception {
         try {
+            // Fast PDF magic header check: read first 5 bytes before expensive getTempFile()
+            if (!hasPdfMagicHeader(item)) {
+                incrementInvalidPdf();
+                return null;
+            }
+
             File tempFile = item.getTempFile();
             if (tempFile == null) {
                 return null;
@@ -390,6 +420,50 @@ public class ThumbnailProcessor implements Runnable {
             }
         } finally {
             cleanupItem(item);
+        }
+    }
+
+    /**
+     * Quick check: scans the first 1024 bytes from the item's stream
+     * looking for the PDF magic header (%PDF-). Per the PDF specification
+     * and PDFBox's COSParser.parsePDFHeader(), the signature can appear
+     * anywhere within the first 1024 bytes (e.g. after BOM, whitespace,
+     * or other preamble). This is orders of magnitude cheaper than
+     * creating a temp file + loading the full document with PDFBox.
+     */
+    private boolean hasPdfMagicHeader(IItem item) {
+        // PDFBox scans up to 1024 bytes for the %PDF- header
+        final int SCAN_LIMIT = 1024;
+        try (BufferedInputStream bis = item.getBufferedInputStream()) {
+            if (bis == null) {
+                return false;
+            }
+            byte[] buf = new byte[SCAN_LIMIT];
+            int totalRead = 0;
+            while (totalRead < buf.length) {
+                int r = bis.read(buf, totalRead, buf.length - totalRead);
+                if (r == -1) {
+                    break;
+                }
+                totalRead += r;
+            }
+            if (totalRead < PDF_MAGIC.length) {
+                return false;
+            }
+            // Scan for %PDF- anywhere within the buffer
+            int scanEnd = totalRead - PDF_MAGIC.length;
+            for (int pos = 0; pos <= scanEnd; pos++) {
+                if (buf[pos] == PDF_MAGIC[0]
+                        && buf[pos + 1] == PDF_MAGIC[1]
+                        && buf[pos + 2] == PDF_MAGIC[2]
+                        && buf[pos + 3] == PDF_MAGIC[3]
+                        && buf[pos + 4] == PDF_MAGIC[4]) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -689,6 +763,11 @@ public class ThumbnailProcessor implements Runnable {
         updateStatus(s.withCounters(s.getMatched(), s.getGenerated(), s.getSkipped(), s.getErrors() + 1));
     }
 
+    private static void incrementInvalidPdf() {
+        StatusSnapshot s = STATUS.get();
+        updateStatus(s.withInvalidPdf(s.getInvalidPdf() + 1));
+    }
+
     private static void recordError(String errorMessage) {
         StatusSnapshot s = STATUS.get();
         updateStatus(s.withError(s.getMatched(), s.getGenerated(), s.getSkipped(), s.getErrors() + 1,
@@ -741,12 +820,13 @@ public class ThumbnailProcessor implements Runnable {
         private final int generated;
         private final int skipped;
         private final int errors;
+        private final int invalidPdf;
         private final String lastError;
 
         private StatusSnapshot(boolean running, boolean finished, boolean cancelled, String message,
                 String currentSource, String currentItem, Set<String> extensions, boolean force,
             long startedAt, long updatedAt, int matched, int generated, int skipped, int errors,
-            String lastError) {
+            int invalidPdf, String lastError) {
             this.running = running;
             this.finished = finished;
             this.cancelled = cancelled;
@@ -761,56 +841,62 @@ public class ThumbnailProcessor implements Runnable {
             this.generated = generated;
             this.skipped = skipped;
             this.errors = errors;
+            this.invalidPdf = invalidPdf;
             this.lastError = lastError;
         }
 
         public static StatusSnapshot idle() {
             long now = System.currentTimeMillis();
             return new StatusSnapshot(false, false, false, "idle", null, null,
-                    Collections.<String>emptySet(), false, 0L, now, 0, 0, 0, 0, null);
+                    Collections.<String>emptySet(), false, 0L, now, 0, 0, 0, 0, 0, null);
         }
 
         public static StatusSnapshot running(Set<String> extensions, boolean force, long startedAt) {
             return new StatusSnapshot(true, false, false, "running", null, null,
                     Collections.unmodifiableSet(new LinkedHashSet<String>(extensions)), force,
-                    startedAt, startedAt, 0, 0, 0, 0, null);
+                    startedAt, startedAt, 0, 0, 0, 0, 0, null);
         }
 
         public StatusSnapshot withCurrentSource(String currentSource) {
             return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, invalidPdf, lastError);
         }
 
         public StatusSnapshot withCurrentItem(String currentItem) {
             return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, invalidPdf, lastError);
         }
 
         public StatusSnapshot withCounters(int matched, int generated, int skipped, int errors) {
             return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, invalidPdf, lastError);
         }
 
         public StatusSnapshot withError(int matched, int generated, int skipped, int errors, String lastError) {
             return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, invalidPdf, lastError);
+        }
+
+        public StatusSnapshot withInvalidPdf(int invalidPdf) {
+            return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, invalidPdf, lastError);
         }
 
         public StatusSnapshot withUpdatedAt(long updatedAt) {
             return new StatusSnapshot(running, finished, cancelled, message, currentSource, currentItem,
-                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, lastError);
+                    extensions, force, startedAt, updatedAt, matched, generated, skipped, errors, invalidPdf, lastError);
         }
 
         public StatusSnapshot finish(boolean cancelled, String message) {
             return new StatusSnapshot(false, true, cancelled, message, currentSource, currentItem,
                     extensions, force, startedAt, System.currentTimeMillis(), matched, generated, skipped, errors,
-                    lastError);
+                    invalidPdf, lastError);
         }
 
         public StatusSnapshot fail(String message) {
             return new StatusSnapshot(false, true, false, "failed: " + message, currentSource, currentItem,
                     extensions, force, startedAt, System.currentTimeMillis(), matched, generated, skipped, errors,
-                    lastError);
+                    invalidPdf, lastError);
         }
 
         public boolean isRunning() {
@@ -869,6 +955,10 @@ public class ThumbnailProcessor implements Runnable {
             return errors;
         }
 
+        public int getInvalidPdf() {
+            return invalidPdf;
+        }
+
         public String getLastError() {
             return lastError;
         }
@@ -888,6 +978,7 @@ public class ThumbnailProcessor implements Runnable {
                     + ", matched=" + matched
                     + ", generated=" + generated
                     + ", skipped=" + skipped
+                    + ", invalidPdf=" + invalidPdf
                     + ", errors=" + errors
                     + (lastError != null ? ", lastError=" + lastError : "")
                     + ", elapsed=" + formatDuration(getElapsedMs())

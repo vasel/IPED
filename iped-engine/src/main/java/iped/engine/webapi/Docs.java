@@ -48,6 +48,9 @@ public class Docs {
     public static DocPropsJSON properties(@PathParam("sourceID") String sourceID, @PathParam("id") int id)
             throws IOException {
         IIPEDSource source = Sources.getSource(sourceID);
+        if (source == null) {
+            throw new javax.ws.rs.WebApplicationException("Source not found", javax.ws.rs.core.Response.Status.NOT_FOUND);
+        }
         return buildDocProps(source, sourceID, id, null);
     }
 
@@ -67,6 +70,11 @@ public class Docs {
         result.setSource(sourceID);
         result.setId(id);
 
+        int luceneID = source.getLuceneId(id);
+        if (luceneID < 0) {
+            throw new javax.ws.rs.WebApplicationException("Document not found for id: " + id, javax.ws.rs.core.Response.Status.NOT_FOUND);
+        }
+
         // Fast path: cached properties (only for the default "all fields" case).
         if (fieldsFilter == null || fieldsFilter.isEmpty()) {
             DocPropsCache.Entry cached = DocPropsCache.get(sourceID, id);
@@ -79,7 +87,6 @@ public class Docs {
             }
         }
 
-        int luceneID = source.getLuceneId(id);
         result.setLuceneId(luceneID);
 
         Document doc;

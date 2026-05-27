@@ -163,6 +163,9 @@ public class IPEDSource implements IIPEDSource {
 
     public static File getTempIndexDir(File moduleDir) throws IOException {
         File prevTempInfoFile = getTempDirInfoFile(moduleDir);
+        if (!prevTempInfoFile.exists()) {
+            return new File(moduleDir, INDEX_DIR);
+        }
         String prevTemp = new String(Files.readAllBytes(prevTempInfoFile.toPath()), "UTF-8");
         return new File(prevTemp, INDEX_DIR);
     }

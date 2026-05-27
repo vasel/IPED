@@ -79,6 +79,9 @@ public class Sources {
 
         LOGGER.info("Loading sources from {}...", urlToAskSources);
         JSONArray arr = askSources(urlToAskSources);
+        
+        arr = preCheckAndFixSources(arr, urlToAskSources);
+        
         int totalSources = arr.size();
         LOGGER.info("Found {} source(s) to load", totalSources);
 
@@ -328,6 +331,112 @@ public class Sources {
             in.close();
         }
         return result;
+    }
+
+    private static JSONArray preCheckAndFixSources(JSONArray arr, String sourcesUrl) {
+        boolean modified = false;
+        JSONArray finalArr = new JSONArray();
+        java.util.Scanner scanner = null;
+        if (System.console() != null) {
+            scanner = new java.util.Scanner(System.in);
+        }
+
+        System.out.println("============================================");
+        System.out.println("IPED WebAPI - Source Index Pre-Check Results");
+        System.out.println("============================================");
+
+        for (int i = 0; i < arr.size(); i++) {
+            JSONObject jsonobj = (JSONObject) arr.get(i);
+            String id = (String) jsonobj.get("id");
+            String path = fixUNCPath((String) jsonobj.get("path"));
+            File file = new File(path);
+
+            boolean found = checkIndexExists(file);
+
+            if (found) {
+                System.out.println("[OK]      " + id + " -> " + path);
+            } else {
+                // Try one level down: path/iped
+                File levelDownFile = new File(file, iped.engine.data.IPEDSource.MODULE_DIR);
+                if (checkIndexExists(levelDownFile)) {
+                    System.out.println("[FOUND]   " + id + " -> " + path + " (index found at " + levelDownFile.getAbsolutePath() + ")");
+                    if (scanner != null) {
+                        System.out.print("Source '" + id + "': Index found at '" + levelDownFile.getAbsolutePath() + "'. Update sources file? [Y/n]: ");
+                        String ans = scanner.nextLine().trim().toLowerCase();
+                        if (ans.isEmpty() || ans.equals("y") || ans.equals("yes")) {
+                            jsonobj.put("path", levelDownFile.getAbsolutePath());
+                            modified = true;
+                            found = true;
+                        }
+                    } else {
+                        LOGGER.warn("Source '{}': Index found one level down at '{}'. Please update your sources file.", id, levelDownFile.getAbsolutePath());
+                    }
+                }
+
+                while (!found) {
+                    System.out.println("[MISSING] " + id + " -> " + path + " (index not found)");
+                    if (scanner != null) {
+                        System.out.print("Source '" + id + "': Index not found. Enter correct path (or 'skip' to ignore): ");
+                        String ans = scanner.nextLine().trim();
+                        if (ans.equalsIgnoreCase("skip")) {
+                            modified = true;
+                            break;
+                        } else if (!ans.isEmpty()) {
+                            File testFile = new File(ans);
+                            if (checkIndexExists(testFile)) {
+                                jsonobj.put("path", ans);
+                                modified = true;
+                                found = true;
+                            } else {
+                                System.out.println("Index still not found at '" + ans + "'.");
+                            }
+                        }
+                    } else {
+                        LOGGER.warn("Source '{}': Index not found. It will be skipped.", id);
+                        modified = true;
+                        break;
+                    }
+                }
+            }
+            if (found) {
+                finalArr.add(jsonobj);
+            }
+        }
+
+        if (modified && (new File(sourcesUrl)).exists()) {
+            try {
+                StringBuilder sb = new StringBuilder();
+                sb.append("[\n");
+                for (int i = 0; i < finalArr.size(); i++) {
+                    sb.append("  ").append(((JSONObject) finalArr.get(i)).toJSONString());
+                    if (i < finalArr.size() - 1) sb.append(",");
+                    sb.append("\n");
+                }
+                sb.append("]\n");
+                java.nio.file.Files.writeString(new File(sourcesUrl).toPath(), sb.toString(), java.nio.charset.StandardCharsets.UTF_8);
+                LOGGER.info("Sources file updated successfully.");
+            } catch (IOException e) {
+                LOGGER.error("Failed to update sources file: {}", e.getMessage());
+            }
+        }
+
+        return finalArr;
+    }
+
+    private static boolean checkIndexExists(File file) {
+        File module = new File(file, iped.engine.data.IPEDSource.MODULE_DIR);
+        File index = new File(module, iped.engine.data.IPEDSource.INDEX_DIR);
+        if (index.exists()) return true;
+        
+        try {
+            File tempIndex = iped.engine.data.IPEDSource.getTempIndexDir(module);
+            if (tempIndex != null && tempIndex.exists()) {
+                return true;
+            }
+        } catch (Exception e) {
+            // ignore
+        }
+        return false;
     }
 
     private static synchronized void buildStats() {

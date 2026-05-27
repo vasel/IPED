@@ -85,11 +85,20 @@ public class Content {
         }
 
         if (reqInfo != null) reqInfo.markPhase("build_response");
+        // Capture for use inside StreamingOutput closures: the ContainerResponseFilter
+        // clears the ThreadLocal request ID before write() is called by Grizzly.
+        final RequestTracker.RequestInfo finalReqInfo = reqInfo;
+        final Long finalReqId = reqId;
 
         // Parse optional Range header (only single byte-range supported)
         if (totalLength > 0 && rangeHeader != null && rangeHeader.startsWith("bytes=")) {
             long[] range = parseRange(rangeHeader, totalLength);
             if (range != null) {
+                if (range[0] == -1) {
+                    return Response.status(416)
+                            .header("Content-Range", "bytes */" + totalLength)
+                            .build();
+                }
                 final long start = range[0];
                 final long end = range[1];
                 final long contentLength = end - start + 1;
@@ -101,9 +110,22 @@ public class Content {
                         .entity(new StreamingOutput() {
                             @Override
                             public void write(OutputStream out) throws IOException, WebApplicationException {
+                                if (finalReqId != null) {
+                                    RequestTracker.setCurrentRequestId(finalReqId);
+                                }
                                 try (InputStream is = eagleStream) {
+                                    if (finalReqInfo != null) finalReqInfo.markPhase("stream_init");
                                     skipFully(is, start);
+                                    if (finalReqInfo != null) finalReqInfo.markPhase("stream_skip");
                                     copyBytes(is, out, contentLength);
+                                    if (finalReqInfo != null) finalReqInfo.markPhase("stream_write");
+                                } catch (IOException e) {
+                                    LOGGER.log(Level.WARNING,
+                                            "Error streaming range content for request #" + finalReqId
+                                            + " (item " + id + ", " + fileName + "): " + e.getMessage(), e);
+                                    throw e;
+                                } finally {
+                                    RequestTracker.clearCurrentRequestId();
                                 }
                             }
                         }).build();
@@ -125,20 +147,17 @@ public class Content {
         return rb.entity(new StreamingOutput() {
                     @Override
                     public void write(OutputStream out) throws IOException, WebApplicationException {
-                        RequestTracker.RequestInfo reqInfo = null;
-                        Long reqId = RequestTracker.getCurrentRequestId();
-                        if (reqId != null) {
-                            reqInfo = RequestTracker.getInstance().getRequest(reqId);
+                        if (finalReqId != null) {
+                            RequestTracker.setCurrentRequestId(finalReqId);
                         }
                         try (InputStream is = eagleStream) {
                             byte[] buf = new byte[BUFFER_SIZE];
                             int read;
                             int writes = 0;
-                            // reset lastMarkNanos if needed by marking start
-                            if (reqInfo != null) reqInfo.markPhase("stream_init");
+                            if (finalReqInfo != null) finalReqInfo.markPhase("stream_init");
                             while (true) {
                                 read = is.read(buf);
-                                if (reqInfo != null) reqInfo.markPhase("stream_read");
+                                if (finalReqInfo != null) finalReqInfo.markPhase("stream_read");
                                 if (read == -1) break;
                                 out.write(buf, 0, read);
                                 // Flush periodically so the client receives progress
@@ -147,10 +166,17 @@ public class Content {
                                 if (++writes % FLUSH_INTERVAL == 0) {
                                     out.flush();
                                 }
-                                if (reqInfo != null) reqInfo.markPhase("stream_write");
+                                if (finalReqInfo != null) finalReqInfo.markPhase("stream_write");
                             }
                             out.flush();
-                            if (reqInfo != null) reqInfo.markPhase("stream_write");
+                            if (finalReqInfo != null) finalReqInfo.markPhase("stream_write");
+                        } catch (IOException e) {
+                            LOGGER.log(Level.WARNING,
+                                    "Error streaming content for request #" + finalReqId
+                                    + " (item " + id + ", " + fileName + "): " + e.getMessage(), e);
+                            throw e;
+                        } finally {
+                            RequestTracker.clearCurrentRequestId();
                         }
                     }
                 }).build();
@@ -179,7 +205,8 @@ public class Content {
                     ? Long.parseLong(parts[1])
                     : totalLength - 1;
 
-            if (start < 0 || start >= totalLength) return null;
+            if (start < 0) return null;
+            if (start >= totalLength) return new long[]{-1, -1};
             if (end >= totalLength) end = totalLength - 1;
             if (end < start) return null;
 

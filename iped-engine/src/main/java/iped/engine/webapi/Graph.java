@@ -127,17 +127,30 @@ public class Graph {
     @Path("nodes")
     @Produces(MediaType.APPLICATION_JSON)
     public DataListJSON<GraphNodeJSON> getNodes(
-            @Parameter(description = "List of node IDs", required = true) List<Long> ids) {
+            @Parameter(description = "List of node IDs", required = true) List<String> stringIds) {
         GraphService gs = getService();
         List<GraphNodeJSON> nodes = new ArrayList<>();
-
-        gs.getNodes(ids, new NodeQueryListener() {
-            @Override
-            public boolean nodeFound(Node node) {
-                nodes.add(convertNode(node));
-                return true;
+        List<Long> ids = new ArrayList<>();
+        
+        if (stringIds != null) {
+            for (String idStr : stringIds) {
+                try {
+                    ids.add(Long.parseLong(idStr));
+                } catch (NumberFormatException e) {
+                    // Ignore non-numeric IDs like frontend-generated UUIDs
+                }
             }
-        });
+        }
+
+        if (!ids.isEmpty()) {
+            gs.getNodes(ids, new NodeQueryListener() {
+                @Override
+                public boolean nodeFound(Node node) {
+                    nodes.add(convertNode(node));
+                    return true;
+                }
+            });
+        }
 
         return new DataListJSON<>(nodes);
     }

@@ -107,7 +107,9 @@ public class SleuthkitServer {
                         sis.seek(out.getLong(13));
                     } else if (cmd == FLAGS.CLOSE) {
                         sis = sisMap.remove(out.getLong(5));
-                        sis.close();
+                        if (sis != null) {
+                            sis.close();
+                        }
                     } else if (cmd == FLAGS.READ) {
                         int len = out.getInt(13);
                         len = Math.max(minToRead, Math.min(len, buf.length));

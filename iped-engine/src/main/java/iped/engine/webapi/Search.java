@@ -170,30 +170,89 @@ public class Search {
             String[] sourceIds = sourceID.split(",");
 
             if (sort != null) {
-                // Sorted multi-source: global search with post-filter
-                IPEDSearcher searcher = new IPEDSearcher(Sources.multiSource, escapeq);
+                // Sorted multi-source: Custom IndexSearcher
+                List<IIPEDSource> validSources = new ArrayList<>();
+                for (String srcId : sourceIds) {
+                    IIPEDSource s = Sources.getSource(srcId.trim());
+                    if (s != null) validSources.add(s);
+                }
+
                 int[] totalHits = new int[1];
 
-                if (useCursor) {
-                    ScoreDoc afterDoc = CursorCodec.decode(cursor);
-                    SearchAfterMultiResult saResult = searcher.multiSearchAfterPaged(rows, totalHits, afterDoc, sort);
-                    total = resolveTotalMulti(isMatchAll, categoryOnly, stats, totalHits[0], sourceID);
-                    Set<Integer> allowed = allowedSourceIds(sourceIds);
-                    IItemId[] items = saResult.getItems();
-                    for (IItemId id : items) {
-                        if (allowed.contains(id.getSourceId())) {
-                            docs.add(new DocIDJSON(Sources.sourceIntToString.get(id.getSourceId()), id.getId()));
+                // Parallel count to get total
+                List<CompletableFuture<SourceInfo>> futures = new ArrayList<>();
+                for (IIPEDSource s : validSources) {
+                    final String finalEscapeq = escapeq;
+                    futures.add(CompletableFuture.supplyAsync(() -> {
+                        try {
+                            IPEDSearcher s2 = new IPEDSearcher((IPEDSource) s, finalEscapeq);
+                            int sourceTotal = resolveSourceTotal(Sources.sourceIntToString.get(s.getSourceId()), s2, isMatchAll, categoryOnly, stats);
+                            return new SourceInfo(Sources.sourceIntToString.get(s.getSourceId()), (IPEDSource) s, sourceTotal);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
                         }
+                    }, SEARCH_POOL));
+                }
+                for (CompletableFuture<SourceInfo> f : futures) {
+                    total += f.join().total;
+                }
+                markPhase("parallel.count");
+
+                org.apache.lucene.index.IndexReader[] readers = new org.apache.lucene.index.IndexReader[validSources.size()];
+                int[] baseDocs = new int[validSources.size() + 1];
+                int cumulative = 0;
+                for (int i = 0; i < validSources.size(); i++) {
+                    readers[i] = validSources.get(i).getReader();
+                    baseDocs[i] = cumulative;
+                    cumulative += readers[i].maxDoc();
+                }
+                baseDocs[validSources.size()] = cumulative;
+
+                if (total > 0 && start < total) {
+                    org.apache.lucene.index.MultiReader multiReader = new org.apache.lucene.index.MultiReader(readers, false);
+                    org.apache.lucene.search.IndexSearcher customSearcher = new org.apache.lucene.search.IndexSearcher(multiReader, SEARCH_POOL);
+                    customSearcher.setSimilarity(new iped.engine.search.IndexerSimilarity());
+
+                    // Build query
+                    org.apache.lucene.search.Query q = new QueryBuilder(Sources.multiSource).getQuery(escapeq);
+                    if (!(q instanceof org.apache.lucene.search.MatchAllDocsQuery)) {
+                        q = new QueryBuilder(Sources.multiSource, true).rewriteQuery(q);
                     }
-                    nextCursor = CursorCodec.encode(saResult.getLastScoreDoc());
-                    if (items.length < rows) nextCursor = null;
-                } else {
-                    IItemId[] page = searcher.multiSearchPaged(start, rows, totalHits, sort);
-                    total = resolveTotalMulti(isMatchAll, categoryOnly, stats, totalHits[0], sourceID);
-                    Set<Integer> allowed = allowedSourceIds(sourceIds);
-                    for (IItemId id : page) {
-                        if (allowed.contains(id.getSourceId())) {
-                            docs.add(new DocIDJSON(Sources.sourceIntToString.get(id.getSourceId()), id.getId()));
+                    org.apache.lucene.search.BooleanQuery.Builder bq = new org.apache.lucene.search.BooleanQuery.Builder();
+                    bq.add(q, org.apache.lucene.search.BooleanClause.Occur.MUST);
+                    bq.add(new org.apache.lucene.search.TermQuery(new org.apache.lucene.index.Term(iped.engine.task.index.IndexItem.TREENODE, "true")), org.apache.lucene.search.BooleanClause.Occur.MUST_NOT);
+                    org.apache.lucene.search.Query finalQuery = bq.build();
+
+                    int numToCollect = useCursor ? rows : Math.min(start + rows, total);
+                    org.apache.lucene.search.TopFieldDocs topDocs;
+                    if (useCursor) {
+                        ScoreDoc afterDoc = CursorCodec.decode(cursor);
+                        topDocs = customSearcher.searchAfter(afterDoc, finalQuery, rows, sort, true);
+                    } else {
+                        topDocs = customSearcher.search(finalQuery, numToCollect, sort, true);
+                    }
+                    ScoreDoc[] scoreDocs = topDocs.scoreDocs;
+
+                    int pageStart = useCursor ? 0 : Math.min(start, scoreDocs.length);
+                    int pageEnd = useCursor ? scoreDocs.length : Math.min(start + rows, scoreDocs.length);
+                    
+                    for (int i = pageStart; i < pageEnd; i++) {
+                        ScoreDoc sd = scoreDocs[i];
+                        // Map custom doc id to source
+                        int idx = java.util.Arrays.binarySearch(baseDocs, 0, validSources.size() + 1, sd.doc);
+                        if (idx < 0) {
+                            idx = -idx - 2;
+                        }
+                        IPEDSource s = (IPEDSource) validSources.get(idx);
+                        int localDoc = sd.doc - baseDocs[idx];
+                        int id = s.getId(localDoc);
+                        docs.add(new DocIDJSON(Sources.sourceIntToString.get(s.getSourceId()), id));
+                    }
+                    
+                    if (scoreDocs.length > 0) {
+                        nextCursor = CursorCodec.encode(scoreDocs[useCursor ? scoreDocs.length - 1 : pageEnd - 1]);
+                        if ((useCursor && scoreDocs.length < rows) || (!useCursor && pageEnd >= total || pageEnd - pageStart < rows)) {
+                            nextCursor = null;
                         }
                     }
                 }

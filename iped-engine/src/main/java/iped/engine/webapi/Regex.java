@@ -46,22 +46,56 @@ public class Regex {
             @QueryParam("sourceID") @DefaultValue("") String sourceID) {
         
         List<RegexPatternJSON> results = new ArrayList<>();
-        Set<String> processedPatterns = new HashSet<>();
+        List<IIPEDSource> sourcesToSearch = new ArrayList<>();
         
         if (sourceID.isEmpty()) {
-            // Search across all sources
-            for (IIPEDSource source : Sources.multiSource.getAtomicSources()) {
-                collectRegexStats(source, results, processedPatterns, maxValues);
-            }
+            sourcesToSearch.addAll(Sources.multiSource.getAtomicSources());
         } else {
-            // Search specific source(s)
             String[] sourceIds = sourceID.split(",");
             for (String srcId : sourceIds) {
                 String trimmedSrcId = srcId.trim();
-                if (trimmedSrcId.isEmpty()) continue;
-                IIPEDSource source = Sources.getSource(trimmedSrcId);
-                collectRegexStats(source, results, processedPatterns, maxValues);
+                if (!trimmedSrcId.isEmpty()) {
+                    IIPEDSource source = Sources.getSource(trimmedSrcId);
+                    if (source != null) sourcesToSearch.add(source);
+                }
             }
+        }
+        
+        java.util.concurrent.ConcurrentHashMap<String, Set<String>> patternValuesMap = new java.util.concurrent.ConcurrentHashMap<>();
+
+        sourcesToSearch.parallelStream().forEach(source -> {
+            try {
+                IndexReader reader = source.getReader();
+                for (LeafReaderContext ctx : reader.leaves()) {
+                    for (var fieldInfo : ctx.reader().getFieldInfos()) {
+                        String fieldName = fieldInfo.name;
+                        if (fieldName.startsWith(REGEX_PREFIX)) {
+                            String patternName = fieldName.substring(REGEX_PREFIX.length());
+                            
+                            Set<String> valuesSet = patternValuesMap.computeIfAbsent(patternName, k -> java.util.concurrent.ConcurrentHashMap.newKeySet());
+                            if (valuesSet.size() >= maxValues) continue;
+                            
+                            Terms terms = ctx.reader().terms(fieldName);
+                            if (terms != null) {
+                                TermsEnum termsEnum = terms.iterator();
+                                while (termsEnum.next() != null && valuesSet.size() < maxValues) {
+                                    valuesSet.add(termsEnum.term().utf8ToString());
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                // Log and continue
+            }
+        });
+
+        for (java.util.Map.Entry<String, Set<String>> entry : patternValuesMap.entrySet()) {
+            List<String> limitedValues = new ArrayList<>(entry.getValue());
+            if (limitedValues.size() > maxValues) {
+                limitedValues = limitedValues.subList(0, maxValues);
+            }
+            results.add(new RegexPatternJSON(entry.getKey(), limitedValues));
         }
         
         return results;
@@ -79,25 +113,45 @@ public class Regex {
             @QueryParam("sourceID") @DefaultValue("") String sourceID) {
         
         String fieldName = REGEX_PREFIX + pattern;
-        Set<String> allValues = new HashSet<>();
+        Set<String> allValues = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        List<IIPEDSource> sourcesToSearch = new ArrayList<>();
         
         if (sourceID.isEmpty()) {
-            // Search across all sources
-            for (IIPEDSource source : Sources.multiSource.getAtomicSources()) {
-                collectFieldValues(source, fieldName, allValues, maxValues);
-            }
+            sourcesToSearch.addAll(Sources.multiSource.getAtomicSources());
         } else {
-            // Search specific source(s)
             String[] sourceIds = sourceID.split(",");
             for (String srcId : sourceIds) {
                 String trimmedSrcId = srcId.trim();
-                if (trimmedSrcId.isEmpty()) continue;
-                IIPEDSource source = Sources.getSource(trimmedSrcId);
-                collectFieldValues(source, fieldName, allValues, maxValues);
+                if (!trimmedSrcId.isEmpty()) {
+                    IIPEDSource source = Sources.getSource(trimmedSrcId);
+                    if (source != null) sourcesToSearch.add(source);
+                }
             }
         }
         
-        return new RegexPatternJSON(pattern, new ArrayList<>(allValues));
+        sourcesToSearch.parallelStream().forEach(source -> {
+            try {
+                IndexReader reader = source.getReader();
+                for (LeafReaderContext ctx : reader.leaves()) {
+                    if (allValues.size() >= maxValues) break;
+                    Terms terms = ctx.reader().terms(fieldName);
+                    if (terms != null) {
+                        TermsEnum termsEnum = terms.iterator();
+                        while (termsEnum.next() != null && allValues.size() < maxValues) {
+                            allValues.add(termsEnum.term().utf8ToString());
+                        }
+                    }
+                }
+            } catch (Exception e) {
+            }
+        });
+        
+        List<String> limited = new ArrayList<>(allValues);
+        if (limited.size() > maxValues) {
+            limited = limited.subList(0, maxValues);
+        }
+        
+        return new RegexPatternJSON(pattern, limited);
     }
 
     @Operation(summary = "List all available regex patterns")
@@ -108,116 +162,38 @@ public class Regex {
             @Parameter(description = "Source ID (optional, searches all sources if empty)")
             @QueryParam("sourceID") @DefaultValue("") String sourceID) {
         
-        Set<String> patterns = new HashSet<>();
+        Set<String> patterns = java.util.concurrent.ConcurrentHashMap.newKeySet();
+        List<IIPEDSource> sourcesToSearch = new ArrayList<>();
         
         if (sourceID.isEmpty()) {
-            // Search across all sources
-            for (IIPEDSource source : Sources.multiSource.getAtomicSources()) {
-                collectPatternNames(source, patterns);
-            }
+            sourcesToSearch.addAll(Sources.multiSource.getAtomicSources());
         } else {
-            // Search specific source(s)
             String[] sourceIds = sourceID.split(",");
             for (String srcId : sourceIds) {
                 String trimmedSrcId = srcId.trim();
-                if (trimmedSrcId.isEmpty()) continue;
-                IIPEDSource source = Sources.getSource(trimmedSrcId);
-                collectPatternNames(source, patterns);
+                if (!trimmedSrcId.isEmpty()) {
+                    IIPEDSource source = Sources.getSource(trimmedSrcId);
+                    if (source != null) sourcesToSearch.add(source);
+                }
             }
         }
+        
+        sourcesToSearch.parallelStream().forEach(source -> {
+            try {
+                IndexReader reader = source.getReader();
+                for (LeafReaderContext ctx : reader.leaves()) {
+                    for (var fieldInfo : ctx.reader().getFieldInfos()) {
+                        String fieldName = fieldInfo.name;
+                        if (fieldName.startsWith(REGEX_PREFIX)) {
+                            patterns.add(fieldName.substring(REGEX_PREFIX.length()));
+                        }
+                    }
+                }
+            } catch (Exception e) {
+            }
+        });
         
         return new DataListJSON<>(new ArrayList<>(patterns));
     }
 
-    /**
-     * Collect regex statistics from a single source.
-     */
-    private void collectRegexStats(IIPEDSource source, List<RegexPatternJSON> results, 
-            Set<String> processedPatterns, int maxValues) {
-        try {
-            IndexReader reader = source.getReader();
-            
-            for (LeafReaderContext ctx : reader.leaves()) {
-                for (var fieldInfo : ctx.reader().getFieldInfos()) {
-                    String fieldName = fieldInfo.name;
-                    
-                    if (fieldName.startsWith(REGEX_PREFIX)) {
-                        String patternName = fieldName.substring(REGEX_PREFIX.length());
-                        
-                        // Find or create the pattern entry
-                        RegexPatternJSON patternEntry = null;
-                        for (RegexPatternJSON existing : results) {
-                            if (existing.getPattern().equals(patternName)) {
-                                patternEntry = existing;
-                                break;
-                            }
-                        }
-                        if (patternEntry == null) {
-                            patternEntry = new RegexPatternJSON(patternName, new ArrayList<>());
-                            results.add(patternEntry);
-                        }
-                        
-                        // Collect values from this field
-                        Terms terms = ctx.reader().terms(fieldName);
-                        if (terms != null) {
-                            TermsEnum termsEnum = terms.iterator();
-                            while (termsEnum.next() != null && patternEntry.getValues().size() < maxValues) {
-                                String value = termsEnum.term().utf8ToString();
-                                if (!patternEntry.getValues().contains(value)) {
-                                    patternEntry.getValues().add(value);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("Error reading regex stats: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Collect values for a specific field from a single source.
-     */
-    private void collectFieldValues(IIPEDSource source, String fieldName, Set<String> values, int maxValues) {
-        try {
-            IndexReader reader = source.getReader();
-            
-            for (LeafReaderContext ctx : reader.leaves()) {
-                Terms terms = ctx.reader().terms(fieldName);
-                if (terms != null) {
-                    TermsEnum termsEnum = terms.iterator();
-                    while (termsEnum.next() != null && values.size() < maxValues) {
-                        String value = termsEnum.term().utf8ToString();
-                        values.add(value);
-                    }
-                }
-                if (values.size() >= maxValues) break;
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("Error reading field values: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Collect pattern names from a single source.
-     */
-    private void collectPatternNames(IIPEDSource source, Set<String> patterns) {
-        try {
-            IndexReader reader = source.getReader();
-            
-            for (LeafReaderContext ctx : reader.leaves()) {
-                for (var fieldInfo : ctx.reader().getFieldInfos()) {
-                    String fieldName = fieldInfo.name;
-                    
-                    if (fieldName.startsWith(REGEX_PREFIX)) {
-                        String patternName = fieldName.substring(REGEX_PREFIX.length());
-                        patterns.add(patternName);
-                    }
-                }
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("Error reading pattern names: " + e.getMessage(), e);
-        }
-    }
 }
